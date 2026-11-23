@@ -193,7 +193,7 @@ private fun HistoryCardItem(
     onDelete: () -> Unit
 ) {
     val dateStr = remember(card.scannedAt) {
-        SimpleDateFormat("dd MMM yyyy • hh:mm a", Locale("ar")).format(Date(card.scannedAt))
+        SimpleDateFormat("dd MMM yyyy • hh:mm a", Locale.forLanguageTag("ar")).format(Date(card.scannedAt))
     }
 
     Card(

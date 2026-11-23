@@ -55,6 +55,30 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Cache Robolectric SDK Artifact
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-android-all-15-robolectric-13954326-i7
+
+      - name: Prefetch Robolectric SDK Artifact
+        run: |
+          M2_DIR="$HOME/.m2/repository/org/robolectric/android-all-instrumented/15-robolectric-13954326-i7"
+          JAR_NAME="android-all-instrumented-15-robolectric-13954326-i7"
+          mkdir -p "$M2_DIR"
+          if [ ! -s "$M2_DIR/$JAR_NAME.jar" ]; then
+            BASE_PATH="org/robolectric/android-all-instrumented/15-robolectric-13954326-i7"
+            PRIMARY="https://maven-central.storage-download.googleapis.com/maven2/$BASE_PATH"
+            FALLBACK="https://repo1.maven.org/maven2/$BASE_PATH"
+            for ext in pom pom.sha512 jar jar.sha512; do
+              curl -fSL --retry 5 --retry-delay 5 --retry-all-errors \
+                "$PRIMARY/$JAR_NAME.$ext" -o "$M2_DIR/$JAR_NAME.$ext" || \
+              curl -fSL --retry 5 --retry-delay 5 --retry-all-errors \
+                "$FALLBACK/$JAR_NAME.$ext" -o "$M2_DIR/$JAR_NAME.$ext"
+            done
+            (cd "$M2_DIR" && echo "$(cat "$JAR_NAME.pom.sha512")  $JAR_NAME.pom" | sha512sum -c - && echo "$(cat "$JAR_NAME.jar.sha512")  $JAR_NAME.jar" | sha512sum -c -)
+          fi
+
       - name: Run Unit & Robolectric Tests
         run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
 
