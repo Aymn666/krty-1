@@ -57,4 +57,27 @@ class CardCodeVoteEngineTest {
         assertTrue(state is OcrScanState.Scanning)
         assertTrue((state as OcrScanState.Scanning).isLowLight)
     }
+
+    @Test
+    fun selectsSingleImageCandidateForGalleryPhoto() {
+        val engine = CardCodeVoteEngine()
+        val result = engine.selectSingleImageCandidate(
+            listOf(
+                CandidateObservation(
+                    text = "6891077607",
+                    normalizedHeight = 0.14f,
+                    inCenterRoi = true,
+                    mlKitConfidence = 0.91f
+                ),
+                CandidateObservation(
+                    text = "0774100051",
+                    normalizedHeight = 0.03f,
+                    inCenterRoi = false,
+                    mlKitConfidence = 0.89f
+                )
+            )
+        )
+        assertTrue(result is OcrScanState.Locked)
+        assertEquals("6891077607", (result as OcrScanState.Locked).code)
+    }
 }

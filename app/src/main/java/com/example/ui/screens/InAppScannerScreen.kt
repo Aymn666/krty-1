@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -30,8 +33,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -43,6 +48,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +72,7 @@ import com.example.ui.theme.EmeraldPrimary
 import com.example.ui.theme.MidnightBg
 import com.example.utils.PermissionHelper
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
 @Composable
@@ -84,10 +91,30 @@ fun InAppScannerScreen(
     var lockedCode by remember { mutableStateOf<String?>(null) }
     var showFallback by remember { mutableStateOf(false) }
 
+    val coroutineScope = rememberCoroutineScope()
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val ocrAnalyzer = remember {
         OcrAnalyzer { newState ->
             scanState = newState
+        }
+    }
+
+    val galleryPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            coroutineScope.launch {
+                val result = OcrAnalyzer.scanImageUri(context, uri)
+                if (result is OcrScanState.Error) {
+                    android.widget.Toast.makeText(
+                        context,
+                        result.message,
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    scanState = result
+                }
+            }
         }
     }
 
@@ -266,29 +293,53 @@ fun InAppScannerScreen(
                     val candidate = (scanState as? OcrScanState.Scanning)?.candidateCode
                         ?: (scanState as? OcrScanState.Locked)?.code
 
-                    Button(
-                        onClick = {
-                            if (!candidate.isNullOrBlank()) {
-                                scanState = OcrScanState.Locked(candidate, 0.95f)
-                            } else {
-                                ocrAnalyzer.reset()
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                            .testTag("inapp_capture_button"),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = EmeraldPrimary,
-                            contentColor = MidnightBg
-                        )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Icon(Icons.Default.CameraAlt, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (candidate != null) "اعتماد الرقم ($candidate)" else "التقاط وإعادة التحليل",
-                            fontWeight = FontWeight.Bold
-                        )
+                        Button(
+                            onClick = {
+                                if (!candidate.isNullOrBlank()) {
+                                    scanState = OcrScanState.Locked(candidate, 0.95f)
+                                } else {
+                                    ocrAnalyzer.reset()
+                                }
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp)
+                                .testTag("inapp_capture_button"),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = EmeraldPrimary,
+                                contentColor = MidnightBg
+                            )
+                        ) {
+                            Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (candidate != null) "اعتماد ($candidate)" else "التقاط / إعادة",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        FilledTonalButton(
+                            onClick = {
+                                galleryPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            modifier = Modifier
+                                .height(50.dp)
+                                .testTag("inapp_gallery_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PhotoLibrary,
+                                contentDescription = "اختيار صورة من المعرض",
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("المعرض", fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 }
             }

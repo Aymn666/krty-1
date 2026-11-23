@@ -140,6 +140,18 @@ class CardCodeVoteEngine(
         return top.key to top.value
     }
 
+    fun selectSingleImageCandidate(observations: List<CandidateObservation>): OcrScanState {
+        val best = selectBestCandidate(observations)
+        return if (best != null) {
+            OcrScanState.Locked(
+                code = best.code,
+                confidence = best.confidence.coerceIn(0f, 1f)
+            )
+        } else {
+            OcrScanState.Error("لم يتم العثور على رقم كرت واضح في الصورة — جرّب صورة أوضح")
+        }
+    }
+
     private fun selectBestCandidate(observations: List<CandidateObservation>): FrameVote? {
         var bestVote: FrameVote? = null
         val validCandidates = observations.mapNotNull { obs ->

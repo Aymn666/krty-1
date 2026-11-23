@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.filled.Wifi
@@ -103,6 +104,7 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import com.example.GalleryPickerActivity
 import com.example.KartiApplication
 import com.example.MainActivity
 import com.example.R
@@ -478,9 +480,30 @@ fun ScannerOverlayContent(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (candidate != null) "تأكيد الكود" else "التقاط / إعادة",
+                                text = if (candidate != null) "تأكيد" else "التقاط",
                                 fontWeight = FontWeight.Bold
                             )
+                        }
+
+                        FilledTonalButton(
+                            onClick = {
+                                onClose()
+                                context.startActivity(
+                                    Intent(context, GalleryPickerActivity::class.java)
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            },
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("overlay_gallery_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PhotoLibrary,
+                                contentDescription = "اختيار صورة من المعرض",
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("المعرض", fontWeight = FontWeight.SemiBold)
                         }
 
                         OutlinedButton(
