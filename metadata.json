@@ -1,0 +1,6 @@
+{
+  "name": "كرتي",
+  "description": "ماسح كروت الواي فاي الذكي لشبكات مايكروتك بالذكاء الاصطناعي المحلي والملء التلقائي",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">كرتي</string>
+    <string name="accessibility_service_label">كرتي — التعبئة التلقائية لبوابات الواي فاي</string>
+    <string name="accessibility_service_description">يقرأ حقول إدخال رقم الكرت في صفحات تسجيل دخول شبكات مايكروتك (Captive Portal) ويقوم بتعبئة رمز الكرت الممسوح والضغط على زر تسجيل الدخول تلقائياً.</string>
+    <string name="notification_listener_label">كرتي — راصد إشعارات شبكات الواي فاي</string>
+    <string name="channel_bubble_name">الأيقونة العائمة لكرتي</string>
+    <string name="channel_bubble_desc">إشعار مستمر لإبقاء أيقونة المسح السريع متاحة عند الاتصال بشبكة واي فاي</string>
+    <string name="channel_scanner_name">الماسح الذكي العائم</string>
+    <string name="channel_scanner_desc">إشعار الكاميرا العائمة أثناء مسح كرت الواي فاي</string>
+    <string name="bubble_notif_title">كرتي جاهز للمسح</string>
+    <string name="bubble_notif_text">اضغط على الأيقونة العائمة لمسح رقم كرت الواي فاي</string>
+    <string name="scanner_notif_title">جاري مسح كرت الواي فاي</string>
+    <string name="scanner_notif_text">وجّه الكاميرا نحو رقم الكرت داخل الإطار</string>
+</resources>
