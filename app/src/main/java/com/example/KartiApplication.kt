@@ -41,12 +41,23 @@ class KartiApplication : Application() {
             setShowBadge(false)
         }
 
+        val portalAlertChannel = NotificationChannel(
+            CHANNEL_PORTAL_ALERT,
+            getString(R.string.channel_portal_alert_name),
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = getString(R.string.channel_portal_alert_desc)
+            setShowBadge(true)
+        }
+
         manager.createNotificationChannel(bubbleChannel)
         manager.createNotificationChannel(scannerChannel)
+        manager.createNotificationChannel(portalAlertChannel)
     }
 
     companion object {
         const val CHANNEL_BUBBLE = "karti_bubble_channel"
         const val CHANNEL_SCANNER = "karti_scanner_channel"
+        const val CHANNEL_PORTAL_ALERT = "karti_portal_alert_channel"
     }
 }

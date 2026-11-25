@@ -4,12 +4,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
 import com.example.KartiApplication
+import com.example.PortalBrowserActivity
 import com.example.utils.PermissionHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,7 +34,7 @@ object CardDispatchCoordinator {
     private val _pendingCardCode = MutableStateFlow<String?>(null)
     val pendingCardCode: StateFlow<String?> = _pendingCardCode.asStateFlow()
 
-    private val _detectedNetworkName = MutableStateFlow<String>("")
+    private val _detectedNetworkName = MutableStateFlow("")
     val detectedNetworkName: StateFlow<String> = _detectedNetworkName.asStateFlow()
 
     private val _autoFillStatus = MutableStateFlow<AutoFillStatus>(AutoFillStatus.Idle)
@@ -48,8 +46,14 @@ object CardDispatchCoordinator {
     private val _isScannerOverlayRunning = MutableStateFlow(false)
     val isScannerOverlayRunning: StateFlow<Boolean> = _isScannerOverlayRunning.asStateFlow()
 
+    private val _isPortalBrowserOpen = MutableStateFlow(false)
+    val isPortalBrowserOpen: StateFlow<Boolean> = _isPortalBrowserOpen.asStateFlow()
+
     private val _isAccessibilityConnected = MutableStateFlow(false)
     val isAccessibilityConnected: StateFlow<Boolean> = _isAccessibilityConnected.asStateFlow()
+
+    @Volatile
+    private var lastAutoCopiedCode: String? = null
 
     fun setBubbleRunning(running: Boolean) {
         _isBubbleRunning.value = running
@@ -57,6 +61,10 @@ object CardDispatchCoordinator {
 
     fun setScannerOverlayRunning(running: Boolean) {
         _isScannerOverlayRunning.value = running
+    }
+
+    fun setPortalBrowserOpen(open: Boolean) {
+        _isPortalBrowserOpen.value = open
     }
 
     fun setAccessibilityConnected(connected: Boolean) {
@@ -79,6 +87,7 @@ object CardDispatchCoordinator {
         saveToHistory: Boolean = true
     ) {
         val cleanCode = code.trim()
+        lastAutoCopiedCode = null
         _pendingCardCode.value = cleanCode
         val app = context.applicationContext as? KartiApplication
 
@@ -99,7 +108,8 @@ object CardDispatchCoordinator {
             _isAccessibilityConnected.value
 
         if (!accessibilityReady) {
-            copyToClipboard(context, cleanCode, showToast = false)
+            copyOnce(context, cleanCode)
+            _pendingCardCode.value = null
             _autoFillStatus.value = AutoFillStatus.AccessibilityDisabled(cleanCode)
             return
         }
@@ -108,12 +118,48 @@ object CardDispatchCoordinator {
         PortalAccessibilityService.requestAutoFill(cleanCode)
     }
 
+    fun markPortalLoginSuccess(context: Context, code: String) {
+        val cleanCode = code.trim()
+        val app = context.applicationContext as? KartiApplication
+        val network = _detectedNetworkName.value
+        _pendingCardCode.value = null
+        _autoFillStatus.value = AutoFillStatus.FilledAndSubmitted(cleanCode, network)
+        scope.launch {
+            app?.cardHistoryRepository?.markSubmitted(cleanCode)
+        }
+    }
+
+    fun saveScannedCardToHistory(
+        context: Context,
+        code: String,
+        confidence: Float,
+        submitted: Boolean
+    ) {
+        val cleanCode = code.trim()
+        val app = context.applicationContext as? KartiApplication ?: return
+        scope.launch {
+            val settings = app.settingsDataStore.settingsFlow.first()
+            val network = _detectedNetworkName.value.ifBlank { settings.lastNetworkName }
+            if (settings.saveHistoryEnabled) {
+                app.cardHistoryRepository.saveScannedCard(
+                    cardCode = cleanCode,
+                    networkName = network,
+                    isAutoSubmitted = submitted,
+                    confidence = confidence
+                )
+            }
+        }
+    }
+
     fun onAutoFillResult(context: Context, code: String, filled: Boolean, submitted: Boolean) {
         val app = context.applicationContext as? KartiApplication
         val network = _detectedNetworkName.value
 
+        // Always clear pending code after the attempt completes so AccessibilityService
+        // never loops repeatedly copying to clipboard or reopening the keyboard.
+        _pendingCardCode.value = null
+
         if (filled && submitted) {
-            _pendingCardCode.value = null
             _autoFillStatus.value = AutoFillStatus.FilledAndSubmitted(code, network)
             scope.launch {
                 app?.cardHistoryRepository?.markSubmitted(code)
@@ -121,9 +167,15 @@ object CardDispatchCoordinator {
         } else if (filled) {
             _autoFillStatus.value = AutoFillStatus.FilledOnly(code)
         } else {
-            copyToClipboard(context, code, showToast = false)
+            copyOnce(context, code)
             _autoFillStatus.value = AutoFillStatus.PortalNotFound(code)
         }
+    }
+
+    private fun copyOnce(context: Context, code: String) {
+        if (lastAutoCopiedCode == code) return
+        lastAutoCopiedCode = code
+        copyToClipboard(context, code, showToast = false)
     }
 
     fun clearPendingCode() {
@@ -139,23 +191,32 @@ object CardDispatchCoordinator {
         }
     }
 
-    fun openCaptivePortalOrWifi(context: Context) {
-        // Try finding current Wi-Fi gateway IP (e.g. 10.0.0.1 or 192.168.88.1) to launch MikroTik portal
-        val gatewayUrl = resolveWifiGatewayUrl(context)
-        val urlIntent = Intent(Intent.ACTION_VIEW, Uri.parse(gatewayUrl)).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        val launchedPortal = runCatching {
-            context.startActivity(urlIntent)
-            true
-        }.getOrDefault(false)
-
-        if (!launchedPortal) {
-            val wifiIntent = Intent(Settings.ACTION_WIFI_SETTINGS).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    fun openInAppPortal(
+        context: Context,
+        autoStartScanner: Boolean = false,
+        prefillCode: String? = null
+    ) {
+        val intent = Intent(context, PortalBrowserActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+            putExtra(PortalBrowserActivity.EXTRA_AUTO_START_SCANNER, autoStartScanner)
+            putExtra(PortalBrowserActivity.EXTRA_NETWORK_NAME, _detectedNetworkName.value)
+            if (!prefillCode.isNullOrBlank()) {
+                putExtra(PortalBrowserActivity.EXTRA_PREFILL_CODE, prefillCode)
             }
-            runCatching { context.startActivity(wifiIntent) }
         }
+        runCatching {
+            context.startActivity(intent)
+        }.onFailure {
+            openWifiSettings(context)
+        }
+    }
+
+    fun openCaptivePortalOrWifi(context: Context) {
+        openInAppPortal(context = context, autoStartScanner = false)
     }
 
     fun openWifiSettings(context: Context) {
@@ -163,28 +224,5 @@ object CardDispatchCoordinator {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         runCatching { context.startActivity(wifiIntent) }
-    }
-
-    private fun resolveWifiGatewayUrl(context: Context): String {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-            ?: return "http://10.0.0.1"
-        @Suppress("DEPRECATION")
-        val networks = cm.allNetworks
-        for (network in networks) {
-            val caps = cm.getNetworkCapabilities(network) ?: continue
-            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-                val linkProps = cm.getLinkProperties(network) ?: continue
-                for (route in linkProps.routes) {
-                    val gateway = route.gateway
-                    if (route.isDefaultRoute && gateway != null && !gateway.isLoopbackAddress) {
-                        val host = gateway.hostAddress
-                        if (!host.isNullOrBlank() && !host.contains(':')) {
-                            return "http://$host"
-                        }
-                    }
-                }
-            }
-        }
-        return "http://10.0.0.1"
     }
 }

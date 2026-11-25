@@ -1,11 +1,17 @@
 package com.example.service
 
+import android.annotation.SuppressLint
 import android.app.Notification
+import android.app.PendingIntent
 import android.content.Intent
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.example.KartiApplication
+import com.example.PortalBrowserActivity
+import com.example.R
 import com.example.utils.PermissionHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +23,7 @@ import kotlinx.coroutines.launch
 class HotspotNotificationListener : NotificationListenerService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var lastAlertTimestampMs = 0L
 
     private val triggerKeywords = listOf(
         "تسجيل الدخول",
@@ -91,10 +98,55 @@ class HotspotNotificationListener : NotificationListenerService() {
                 val intent = Intent(this@HotspotNotificationListener, OverlayBubbleService::class.java).apply {
                     putExtra(OverlayBubbleService.EXTRA_NETWORK_NAME, detectedNetwork)
                 }
-                runCatching {
+                val started = runCatching {
                     ContextCompat.startForegroundService(this@HotspotNotificationListener, intent)
+                    true
+                }.getOrDefault(false)
+                if (!started) {
+                    showFallbackPortalNotification(detectedNetwork)
                 }
+            } else {
+                showFallbackPortalNotification(detectedNetwork)
             }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun showFallbackPortalNotification(networkName: String) {
+        if (!PermissionHelper.isNotificationGranted(this)) return
+        val now = System.currentTimeMillis()
+        if (now - lastAlertTimestampMs < 6_000L) return
+        lastAlertTimestampMs = now
+
+        val portalIntent = Intent(this, PortalBrowserActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(PortalBrowserActivity.EXTRA_AUTO_START_SCANNER, true)
+            putExtra(PortalBrowserActivity.EXTRA_NETWORK_NAME, networkName)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            PORTAL_ALERT_NOTIF_ID,
+            portalIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val title = if (networkName.isNotBlank()) {
+            "شبكة $networkName تتطلب كرت"
+        } else {
+            getString(R.string.portal_alert_title)
+        }
+
+        val notification = NotificationCompat.Builder(this, KartiApplication.CHANNEL_PORTAL_ALERT)
+            .setSmallIcon(R.mipmap.ic_launcher_round)
+            .setContentTitle(title)
+            .setContentText(getString(R.string.portal_alert_text))
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+
+        runCatching {
+            NotificationManagerCompat.from(this).notify(PORTAL_ALERT_NOTIF_ID, notification)
         }
     }
 
@@ -115,5 +167,9 @@ class HotspotNotificationListener : NotificationListenerService() {
     override fun onDestroy() {
         scope.cancel()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val PORTAL_ALERT_NOTIF_ID = 4003
     }
 }

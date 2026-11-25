@@ -1,6 +1,8 @@
 package com.example.utils
 
 import android.Manifest
+import android.app.Activity
+import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -18,12 +20,13 @@ import com.example.service.PortalAccessibilityService
 data class PermissionStatus(
     val cameraGranted: Boolean = false,
     val overlayGranted: Boolean = false,
+    val overlaySupported: Boolean = true,
     val notificationsGranted: Boolean = false,
     val notificationListenerGranted: Boolean = false,
     val accessibilityGranted: Boolean = false
 ) {
     val allCoreGranted: Boolean
-        get() = cameraGranted && overlayGranted && notificationsGranted
+        get() = cameraGranted && (overlayGranted || !overlaySupported) && notificationsGranted
 
     val allRecommendedGranted: Boolean
         get() = allCoreGranted && notificationListenerGranted && accessibilityGranted
@@ -35,6 +38,7 @@ object PermissionHelper {
         return PermissionStatus(
             cameraGranted = isCameraGranted(context),
             overlayGranted = isOverlayGranted(context),
+            overlaySupported = isOverlaySupported(context),
             notificationsGranted = isNotificationGranted(context),
             notificationListenerGranted = isNotificationListenerGranted(context),
             accessibilityGranted = isAccessibilityServiceEnabled(context)
@@ -50,6 +54,11 @@ object PermissionHelper {
 
     fun isOverlayGranted(context: Context): Boolean {
         return Settings.canDrawOverlays(context)
+    }
+
+    fun isOverlaySupported(context: Context): Boolean {
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        return !(am?.isLowRamDevice ?: false)
     }
 
     fun isNotificationGranted(context: Context): Boolean {
@@ -83,23 +92,38 @@ object PermissionHelper {
         }
     }
 
+    private fun Intent.applyContextTaskFlag(context: Context): Intent = apply {
+        if (context !is Activity) {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
     fun openOverlaySettings(context: Context) {
-        val intent = Intent(
+        val packageIntent = Intent(
             Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
             Uri.parse("package:${context.packageName}")
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        runCatching { context.startActivity(intent) }
+        ).applyContextTaskFlag(context)
+
+        runCatching {
+            context.startActivity(packageIntent)
+        }.recoverCatching {
+            val genericIntent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                .applyContextTaskFlag(context)
+            context.startActivity(genericIntent)
+        }.onFailure {
+            openAppDetailsSettings(context)
+        }
     }
 
     fun openNotificationListenerSettings(context: Context) {
         val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .applyContextTaskFlag(context)
         runCatching { context.startActivity(intent) }
     }
 
     fun openAccessibilitySettings(context: Context) {
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .applyContextTaskFlag(context)
         runCatching { context.startActivity(intent) }
     }
 
@@ -107,7 +131,7 @@ object PermissionHelper {
         val intent = Intent(
             Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
             Uri.parse("package:${context.packageName}")
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ).applyContextTaskFlag(context)
         runCatching { context.startActivity(intent) }
     }
 

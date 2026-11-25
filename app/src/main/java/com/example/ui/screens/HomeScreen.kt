@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -43,6 +44,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -80,9 +82,11 @@ fun HomeScreen(
     onRequestCameraPermission: () -> Unit,
     onRequestNotificationPermission: () -> Unit,
     onOpenOverlaySettings: () -> Unit,
+    onOpenAppDetailsSettings: () -> Unit,
     onOpenNotificationListenerSettings: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onOpenInAppScanner: () -> Unit,
+    onOpenPortalWithScanner: () -> Unit,
     onStartOverlayScanner: () -> Unit,
     onToggleFloatingBubble: () -> Unit,
     onCopyCode: (String) -> Unit,
@@ -90,6 +94,27 @@ fun HomeScreen(
     modifier: Modifier = Modifier
 ) {
     var showAccessibilityGuide by remember { mutableStateOf(false) }
+    var showOverlayGuide by remember { mutableStateOf(false) }
+    var showOverlayBlockedDialog by remember { mutableStateOf(false) }
+
+    if (showOverlayBlockedDialog) {
+        OverlayBlockedDialog(
+            overlaySupported = uiState.permissions.overlaySupported,
+            onOpenAppDetails = {
+                showOverlayBlockedDialog = false
+                onOpenAppDetailsSettings()
+            },
+            onRetryOverlaySettings = {
+                showOverlayBlockedDialog = false
+                onOpenOverlaySettings()
+            },
+            onUseDirectPortalScanner = {
+                showOverlayBlockedDialog = false
+                onOpenPortalWithScanner()
+            },
+            onDismiss = { showOverlayBlockedDialog = false }
+        )
+    }
 
     Box(
         modifier = modifier.fillMaxSize(),
@@ -142,7 +167,16 @@ fun HomeScreen(
                         }
 
                         FilledTonalButton(
-                            onClick = onToggleFloatingBubble,
+                            onClick = {
+                                if (!uiState.isBubbleRunning &&
+                                    !uiState.permissions.overlayGranted &&
+                                    (uiState.hasAttemptedOverlayGrant || !uiState.permissions.overlaySupported)
+                                ) {
+                                    showOverlayBlockedDialog = true
+                                } else {
+                                    onToggleFloatingBubble()
+                                }
+                            },
                             modifier = Modifier
                                 .weight(1f)
                                 .height(52.dp)
@@ -156,6 +190,24 @@ fun HomeScreen(
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
+                    }
+
+                    FilledTonalButton(
+                        onClick = onOpenPortalWithScanner,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("launch_portal_scanner_button"),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.OpenInBrowser,
+                            contentDescription = null,
+                            tint = EmeraldPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("فتح بوابة الشبكة والمسح مباشرة", fontWeight = FontWeight.SemiBold)
                     }
 
                     if (uiState.permissions.cameraGranted && uiState.permissions.overlayGranted) {
@@ -239,12 +291,40 @@ fun HomeScreen(
 
                     PermissionItemCard(
                         title = "الظهور فوق التطبيقات (Overlay)",
-                        description = "لعرض الأيقونة العائمة ونافذة المسح فوق صفحة البوابة",
+                        description = if (!uiState.permissions.overlaySupported) {
+                            "غير مدعوم على هذا النظام — استخدم زر المسح المباشر بالبوابة"
+                        } else {
+                            "لعرض الأيقونة العائمة ونافذة المسح فوق صفحة البوابة"
+                        },
                         icon = Icons.Default.Layers,
                         isGranted = uiState.permissions.overlayGranted,
                         buttonTag = "perm_overlay_button",
-                        onActivate = onOpenOverlaySettings
+                        onActivate = {
+                            if (!uiState.permissions.overlaySupported) {
+                                showOverlayBlockedDialog = true
+                            } else {
+                                onOpenOverlaySettings()
+                            }
+                        },
+                        secondaryActionLabel = if (!uiState.permissions.overlayGranted) {
+                            "حل مشكلة إطفاء الزر"
+                        } else {
+                            null
+                        },
+                        onSecondaryAction = { showOverlayGuide = !showOverlayGuide }
                     )
+
+                    AnimatedVisibility(
+                        visible = !uiState.permissions.overlayGranted &&
+                            (showOverlayGuide || uiState.hasAttemptedOverlayGrant || !uiState.permissions.overlaySupported)
+                    ) {
+                        OverlayGuideCard(
+                            overlaySupported = uiState.permissions.overlaySupported,
+                            onOpenAppDetails = onOpenAppDetailsSettings,
+                            onOpenOverlaySettings = onOpenOverlaySettings,
+                            onOpenPortalWithScanner = onOpenPortalWithScanner
+                        )
+                    }
 
                     PermissionItemCard(
                         title = "إمكانية الوصول (Accessibility)",
@@ -260,6 +340,7 @@ fun HomeScreen(
                     AnimatedVisibility(visible = showAccessibilityGuide || !uiState.permissions.accessibilityGranted) {
                         AccessibilityGuideCard(
                             onOpenSettings = onOpenAccessibilitySettings,
+                            onOpenAppDetails = onOpenAppDetailsSettings,
                             onOpenPortalFallback = onOpenCaptivePortal
                         )
                     }
@@ -608,8 +689,159 @@ private fun PermissionItemCard(
 }
 
 @Composable
+private fun OverlayGuideCard(
+    overlaySupported: Boolean,
+    onOpenAppDetails: () -> Unit,
+    onOpenOverlaySettings: () -> Unit,
+    onOpenPortalWithScanner: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, AmberWarning.copy(alpha = 0.4f), RoundedCornerShape(16.dp)),
+        colors = CardDefaults.cardColors(containerColor = ElevatedNavyCard),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = if (overlaySupported) {
+                    "لماذا يرجع زر «الظهور فوق التطبيقات» للإطفاء؟"
+                } else {
+                    "الظهور فوق التطبيقات غير مدعوم على هذا الجهاز"
+                },
+                style = MaterialTheme.typography.titleMedium,
+                color = AmberWarning
+            )
+            Text(
+                text = if (overlaySupported) {
+                    "في أندرويد 13–15 وبيئة المعاينة، يمنع النظام تفعيل زر الظهور للتطبيقات المثبتة خارج المتجر فيعود للإطفاء تلقائياً:\n" +
+                        "1. اضغط «معلومات التطبيق» بالأسفل.\n" +
+                        "2. اضغط الثلاث نقاط (⋮) في أعلى الزاوية واختر «السماح بالإعدادات المقيدة».\n" +
+                        "3. ارجع لصفحة «الظهور فوق التطبيقات» وفعّل المفتاح.\n" +
+                        "بديل فوري: يعمل التطبيق بالكامل بدون هذه الصلاحية عبر زر «فتح البوابة والمسح»."
+                } else {
+                    "نظام هذا الجهاز (ذاكرة محدودة) يعطّل نوافذ الظهور فوق التطبيقات تلقائياً. يمكنك استخدام زر «فتح البوابة والمسح» أو إشعار كرتي التلقائي للعمل بدونها."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onOpenAppDetails,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("guide_open_app_details_button"),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = AmberWarning,
+                        contentColor = MidnightBg
+                    )
+                ) {
+                    Text("معلومات التطبيق", fontWeight = FontWeight.Bold)
+                }
+                OutlinedButton(
+                    onClick = onOpenPortalWithScanner,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("guide_open_portal_scanner_button")
+                ) {
+                    Text("البوابة والمسح")
+                }
+            }
+            if (overlaySupported) {
+                TextButton(
+                    onClick = onOpenOverlaySettings,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("guide_retry_overlay_button")
+                ) {
+                    Text("إعادة المحاولة في إعدادات الظهور", color = CyanSecondary)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OverlayBlockedDialog(
+    overlaySupported: Boolean,
+    onOpenAppDetails: () -> Unit,
+    onRetryOverlaySettings: () -> Unit,
+    onUseDirectPortalScanner: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DeepNavySurface,
+        titleContentColor = Color.White,
+        textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        title = {
+            Text(
+                text = if (overlaySupported) "تفعيل الإعدادات المقيدة للظهور" else "الظهور العائم غير مدعوم",
+                style = MaterialTheme.typography.titleMedium
+            )
+        },
+        text = {
+            Text(
+                text = if (overlaySupported) {
+                    "إذا كان مفتاح «الظهور فوق التطبيقات» ينطفئ تلقائياً في الإعدادات، افتح «معلومات التطبيق» ← الثلاث نقاط (⋮) ← «السماح بالإعدادات المقيدة»، أو افتح البوابة والمسح مباشرة دون الحاجة للأيقونة العائمة."
+                } else {
+                    "هذا الجهاز يمنع نوافذ الظهور فوق التطبيقات. يمكنك فتح البوابة والمسح مباشرة بكامل المزايا."
+                },
+                style = MaterialTheme.typography.bodyMedium
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onUseDirectPortalScanner,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = EmeraldPrimary,
+                    contentColor = MidnightBg
+                ),
+                modifier = Modifier
+                    .height(48.dp)
+                    .testTag("dialog_open_portal_scanner_button")
+            ) {
+                Text("فتح البوابة والمسح الآن", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(
+                    onClick = onOpenAppDetails,
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("dialog_open_app_details_button")
+                ) {
+                    Text("معلومات التطبيق", color = AmberWarning)
+                }
+                if (overlaySupported) {
+                    TextButton(
+                        onClick = onRetryOverlaySettings,
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("dialog_retry_overlay_button")
+                    ) {
+                        Text("الإعدادات", color = CyanSecondary)
+                    }
+                }
+            }
+        }
+    )
+}
+
+@Composable
 private fun AccessibilityGuideCard(
     onOpenSettings: () -> Unit,
+    onOpenAppDetails: () -> Unit,
     onOpenPortalFallback: () -> Unit
 ) {
     Card(
@@ -650,13 +882,22 @@ private fun AccessibilityGuideCard(
                     Text("فتح الإعدادات")
                 }
                 OutlinedButton(
-                    onClick = onOpenPortalFallback,
+                    onClick = onOpenAppDetails,
                     modifier = Modifier
                         .weight(1f)
                         .height(48.dp)
+                        .testTag("guide_accessibility_app_details_button")
                 ) {
-                    Text("فتح بوابة الدخول")
+                    Text("معلومات التطبيق")
                 }
+            }
+            OutlinedButton(
+                onClick = onOpenPortalFallback,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                Text("فتح بوابة الدخول")
             }
         }
     }

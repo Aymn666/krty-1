@@ -136,20 +136,19 @@ fun InAppScannerScreen(
             if (vibrationEnabled) {
                 PermissionHelper.triggerSuccessVibration(context)
             }
-            CardDispatchCoordinator.dispatchScannedCode(
+            CardDispatchCoordinator.saveScannedCardToHistory(
                 context = context,
                 code = current.code,
-                confidence = current.confidence
+                confidence = current.confidence,
+                submitted = false
             )
-            val accessibilityReady = PermissionHelper.isAccessibilityServiceEnabled(context) ||
-                CardDispatchCoordinator.isAccessibilityConnected.value
-            if (accessibilityReady) {
-                delay(550L)
-                CardDispatchCoordinator.openCaptivePortalOrWifi(context)
-                onClose()
-            } else {
-                showFallback = true
-            }
+            delay(350L)
+            CardDispatchCoordinator.openInAppPortal(
+                context = context,
+                autoStartScanner = false,
+                prefillCode = current.code
+            )
+            onClose()
         }
     }
 

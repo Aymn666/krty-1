@@ -13,18 +13,23 @@ import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
-import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import androidx.core.content.ContextCompat
 import com.example.KartiApplication
 import com.example.MainActivity
 import com.example.R
 import com.example.utils.PermissionHelper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 class OverlayBubbleService : Service() {
@@ -32,6 +37,7 @@ class OverlayBubbleService : Service() {
     private var windowManager: WindowManager? = null
     private var bubbleRoot: FrameLayout? = null
     private var layoutParams: WindowManager.LayoutParams? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -44,11 +50,12 @@ class OverlayBubbleService : Service() {
         }
         CardDispatchCoordinator.setBubbleRunning(true)
         setupBubbleWindow()
+        observePortalVisibility()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            stopSelf()
+            stopBubbleImmediately()
             return START_NOT_STICKY
         }
         val networkName = intent?.getStringExtra(EXTRA_NETWORK_NAME).orEmpty()
@@ -59,6 +66,14 @@ class OverlayBubbleService : Service() {
             setupBubbleWindow()
         }
         return START_STICKY
+    }
+
+    private fun observePortalVisibility() {
+        serviceScope.launch {
+            CardDispatchCoordinator.isPortalBrowserOpen.collectLatest { isPortalOpen ->
+                bubbleRoot?.visibility = if (isPortalOpen) View.GONE else View.VISIBLE
+            }
+        }
     }
 
     private fun startBubbleForeground() {
@@ -98,8 +113,8 @@ class OverlayBubbleService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val density = resources.displayMetrics.density
         val bubbleSizePx = (60 * density).toInt()
-        val closeSizePx = (22 * density).toInt()
-        val wrapperSizePx = (68 * density).toInt()
+        val closeSizePx = (26 * density).toInt()
+        val wrapperSizePx = (72 * density).toInt()
         val screenWidth = resources.displayMetrics.widthPixels
 
         val root = FrameLayout(this)
@@ -136,7 +151,7 @@ class OverlayBubbleService : Service() {
         }
         root.addView(innerCircle, bubbleParams)
 
-        // Small dismiss badge on top-end corner
+        // Dismiss badge on top-end corner
         val closeBadge = ImageView(this).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
             setColorFilter(Color.WHITE)
@@ -145,9 +160,11 @@ class OverlayBubbleService : Service() {
                 setColor(Color.parseColor("#D32F2F"))
                 setStroke((1.5f * density).toInt(), Color.parseColor("#07111E"))
             }
-            val p = (3 * density).toInt()
+            val p = (4 * density).toInt()
             setPadding(p, p, p, p)
-            setOnClickListener { stopSelf() }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { stopBubbleImmediately() }
         }
         val closeParams = FrameLayout.LayoutParams(closeSizePx, closeSizePx).apply {
             gravity = Gravity.TOP or Gravity.END
@@ -220,36 +237,31 @@ class OverlayBubbleService : Service() {
 
         bubbleRoot = root
         layoutParams = params
+        root.visibility = if (CardDispatchCoordinator.isPortalBrowserOpen.value) View.GONE else View.VISIBLE
         runCatching { windowManager?.addView(root, params) }
     }
 
-    private fun onBubbleTapped() {
-        if (!PermissionHelper.isCameraGranted(this)) {
-            Toast.makeText(this, "يرجى منح صلاحية الكاميرا أولاً", Toast.LENGTH_SHORT).show()
-            val intent = Intent(this, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
-            return
+    private fun stopBubbleImmediately() {
+        bubbleRoot?.let { view ->
+            view.visibility = View.GONE
+            runCatching { windowManager?.removeViewImmediate(view) }
         }
+        bubbleRoot = null
+        stopSelf()
+    }
 
-        val scannerIntent = Intent(this, ScannerOverlayService::class.java)
-        runCatching {
-            ContextCompat.startForegroundService(this, scannerIntent)
-        }.onFailure {
-            // Fallback to opening MainActivity in-app scanner if OEM blocks background camera FGS
-            val fallback = Intent(this, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                putExtra(MainActivity.EXTRA_OPEN_IN_APP_SCANNER, true)
-            }
-            startActivity(fallback)
-        }
+    private fun onBubbleTapped() {
+        CardDispatchCoordinator.openInAppPortal(
+            context = this,
+            autoStartScanner = true
+        )
     }
 
     override fun onDestroy() {
+        serviceScope.cancel()
         CardDispatchCoordinator.setBubbleRunning(false)
         bubbleRoot?.let { view ->
-            runCatching { windowManager?.removeView(view) }
+            runCatching { windowManager?.removeViewImmediate(view) }
         }
         bubbleRoot = null
         super.onDestroy()

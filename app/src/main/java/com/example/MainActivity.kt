@@ -290,7 +290,11 @@ fun KartiAppRoot(
                                 }
                             },
                             onOpenOverlaySettings = {
+                                viewModel.markOverlaySettingsAttempted()
                                 PermissionHelper.openOverlaySettings(context)
+                            },
+                            onOpenAppDetailsSettings = {
+                                PermissionHelper.openAppDetailsSettings(context)
                             },
                             onOpenNotificationListenerSettings = {
                                 PermissionHelper.openNotificationListenerSettings(context)
@@ -300,6 +304,9 @@ fun KartiAppRoot(
                             },
                             onOpenInAppScanner = {
                                 navController.navigate(ROUTE_SCANNER)
+                            },
+                            onOpenPortalWithScanner = {
+                                viewModel.openCaptivePortalWithScanner()
                             },
                             onStartOverlayScanner = {
                                 val launched = viewModel.launchScannerOverlay()
@@ -311,7 +318,12 @@ fun KartiAppRoot(
                                 if (uiState.isBubbleRunning) {
                                     viewModel.stopFloatingBubble()
                                 } else {
-                                    viewModel.startFloatingBubble()
+                                    viewModel.markOverlaySettingsAttempted()
+                                    if (uiState.permissions.overlayGranted) {
+                                        viewModel.startFloatingBubble()
+                                    } else {
+                                        PermissionHelper.openOverlaySettings(context)
+                                    }
                                 }
                             },
                             onCopyCode = { code -> viewModel.copyCardCode(code) },

@@ -204,9 +204,16 @@ class ScannerOverlayService :
                         initialTorchEnabled = initialTorch,
                         vibrationEnabled = vibrationEnabled,
                         lifecycleOwner = this@ScannerOverlayService,
-                        onClose = { stopSelf() },
-                        onCodeLockedAndAutoFillReady = {
-                            mainHandler.postDelayed({ stopSelf() }, 650L)
+                        onClose = { closeOverlayImmediately() },
+                        onCodeLockedAndAutoFillReady = { code, confidence ->
+                            mainHandler.postDelayed({
+                                closeOverlayImmediately()
+                                CardDispatchCoordinator.dispatchScannedCode(
+                                    context = this@ScannerOverlayService,
+                                    code = code,
+                                    confidence = confidence
+                                )
+                            }, 350L)
                         }
                     )
                 }
@@ -227,10 +234,20 @@ class ScannerOverlayService :
         runCatching { windowManager?.addView(view, params) }
     }
 
+    private fun closeOverlayImmediately() {
+        mainHandler.removeCallbacksAndMessages(null)
+        composeView?.let { view ->
+            runCatching { windowManager?.removeViewImmediate(view) }
+        }
+        composeView = null
+        stopSelf()
+    }
+
     override fun onDestroy() {
+        mainHandler.removeCallbacksAndMessages(null)
         CardDispatchCoordinator.setScannerOverlayRunning(false)
         composeView?.let { view ->
-            runCatching { windowManager?.removeView(view) }
+            runCatching { windowManager?.removeViewImmediate(view) }
         }
         composeView = null
         store.clear()
@@ -248,7 +265,7 @@ fun ScannerOverlayContent(
     vibrationEnabled: Boolean,
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
     onClose: () -> Unit,
-    onCodeLockedAndAutoFillReady: () -> Unit
+    onCodeLockedAndAutoFillReady: (String, Float) -> Unit
 ) {
     val context = LocalContext.current
     var torchEnabled by remember { mutableStateOf(initialTorchEnabled) }
@@ -282,16 +299,16 @@ fun ScannerOverlayContent(
             if (vibrationEnabled) {
                 PermissionHelper.triggerSuccessVibration(context)
             }
-            CardDispatchCoordinator.dispatchScannedCode(
-                context = context,
-                code = current.code,
-                confidence = current.confidence
-            )
             val accessibilityReady = PermissionHelper.isAccessibilityServiceEnabled(context) ||
                 CardDispatchCoordinator.isAccessibilityConnected.value
             if (accessibilityReady) {
-                onCodeLockedAndAutoFillReady()
+                onCodeLockedAndAutoFillReady(current.code, current.confidence)
             } else {
+                CardDispatchCoordinator.dispatchScannedCode(
+                    context = context,
+                    code = current.code,
+                    confidence = current.confidence
+                )
                 showAccessibilityFallback = true
             }
         }

@@ -29,7 +29,8 @@ data class MainUiState(
     val isBubbleRunning: Boolean = false,
     val pendingCode: String? = null,
     val autoFillStatus: AutoFillStatus = AutoFillStatus.Idle,
-    val detectedNetwork: String = ""
+    val detectedNetwork: String = "",
+    val hasAttemptedOverlayGrant: Boolean = false
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -39,6 +40,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val historyRepo = app.cardHistoryRepository
 
     private val _permissions = MutableStateFlow(PermissionHelper.checkAllPermissions(application))
+    private val _hasAttemptedOverlayGrant = MutableStateFlow(false)
 
     val uiState: StateFlow<MainUiState> = combine(
         settingsStore.settingsFlow,
@@ -47,7 +49,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         CardDispatchCoordinator.isBubbleRunning,
         CardDispatchCoordinator.pendingCardCode,
         CardDispatchCoordinator.autoFillStatus,
-        CardDispatchCoordinator.detectedNetworkName
+        CardDispatchCoordinator.detectedNetworkName,
+        _hasAttemptedOverlayGrant
     ) { values ->
         val settings = values[0] as KartiSettings
         @Suppress("UNCHECKED_CAST")
@@ -57,6 +60,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val pending = values[4] as String?
         val fillStatus = values[5] as AutoFillStatus
         val network = values[6] as String
+        val attemptedOverlay = values[7] as Boolean
 
         MainUiState(
             settings = settings,
@@ -65,7 +69,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             isBubbleRunning = bubbleRunning,
             pendingCode = pending,
             autoFillStatus = fillStatus,
-            detectedNetwork = network.ifBlank { settings.lastNetworkName }
+            detectedNetwork = network.ifBlank { settings.lastNetworkName },
+            hasAttemptedOverlayGrant = attemptedOverlay
         )
     }.stateIn(
         scope = viewModelScope,
@@ -74,7 +79,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     fun refreshPermissions() {
-        _permissions.value = PermissionHelper.checkAllPermissions(app)
+        val currentPerms = PermissionHelper.checkAllPermissions(app)
+        _permissions.value = currentPerms
+        if (currentPerms.overlayGranted) {
+            _hasAttemptedOverlayGrant.value = false
+        }
+    }
+
+    fun markOverlaySettingsAttempted() {
+        _hasAttemptedOverlayGrant.value = true
     }
 
     fun setAutoFlash(enabled: Boolean) {
@@ -108,6 +121,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startFloatingBubble() {
         if (!PermissionHelper.isOverlayGranted(app)) {
+            _hasAttemptedOverlayGrant.value = true
             Toast.makeText(app, "فعّل صلاحية الظهور فوق التطبيقات أولاً", Toast.LENGTH_SHORT).show()
             PermissionHelper.openOverlaySettings(app)
             return
@@ -140,16 +154,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun reDispatchCardCode(code: String) {
-        CardDispatchCoordinator.dispatchScannedCode(
+        CardDispatchCoordinator.openInAppPortal(
             context = app,
-            code = code,
-            saveToHistory = false
+            autoStartScanner = false,
+            prefillCode = code
         )
-        CardDispatchCoordinator.openCaptivePortalOrWifi(app)
     }
 
     fun openCaptivePortal() {
-        CardDispatchCoordinator.openCaptivePortalOrWifi(app)
+        CardDispatchCoordinator.openInAppPortal(
+            context = app,
+            autoStartScanner = false
+        )
+    }
+
+    fun openCaptivePortalWithScanner() {
+        CardDispatchCoordinator.openInAppPortal(
+            context = app,
+            autoStartScanner = true
+        )
     }
 
     fun clearPendingDispatch() {

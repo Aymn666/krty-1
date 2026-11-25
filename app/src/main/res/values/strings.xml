@@ -11,4 +11,8 @@
     <string name="bubble_notif_text">اضغط على الأيقونة العائمة لمسح رقم كرت الواي فاي</string>
     <string name="scanner_notif_title">جاري مسح كرت الواي فاي</string>
     <string name="scanner_notif_text">وجّه الكاميرا نحو رقم الكرت داخل الإطار</string>
+    <string name="channel_portal_alert_name">تنبيهات بوابة الواي فاي</string>
+    <string name="channel_portal_alert_desc">إشعار فوري لفتح بوابة الدخول والمسح عند اكتشاف شبكة واي فاي تتطلب كرت</string>
+    <string name="portal_alert_title">شبكة واي فاي تتطلب إدخال كرت</string>
+    <string name="portal_alert_text">اضغط هنا لفتح البوابة ومسح رقم الكرت تلقائياً</string>
 </resources>
