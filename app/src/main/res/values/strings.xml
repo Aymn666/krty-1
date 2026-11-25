@@ -15,4 +15,9 @@
     <string name="channel_portal_alert_desc">إشعار فوري لفتح بوابة الدخول والمسح عند اكتشاف شبكة واي فاي تتطلب كرت</string>
     <string name="portal_alert_title">شبكة واي فاي تتطلب إدخال كرت</string>
     <string name="portal_alert_text">اضغط هنا لفتح البوابة ومسح رقم الكرت تلقائياً</string>
+    <string name="widget_scan_label">مسح كرت سريع</string>
+    <string name="widget_scan_subtitle">اختصار المسح الفوري</string>
+    <string name="widget_scan_action">مسح كرت</string>
+    <string name="widget_portal_action">فتح البوابة مع الماسح</string>
+    <string name="widget_scan_desc">اختصار مباشر من الشاشة الرئيسية لفتح الماسح الذكي وقراءة كرت الواي فاي فوراً</string>
 </resources>

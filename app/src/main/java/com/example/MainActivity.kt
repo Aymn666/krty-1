@@ -43,6 +43,10 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -84,6 +88,7 @@ private data class NavTabItem(
 class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
+    private var openScannerTrigger by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -91,13 +96,16 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(MidnightBg.toArgb()),
             navigationBarStyle = SystemBarStyle.dark(DeepNavySurface.toArgb())
         )
-        val openScannerOnStart = intent?.getBooleanExtra(EXTRA_OPEN_IN_APP_SCANNER, false) == true
+        if (intent?.getBooleanExtra(EXTRA_OPEN_IN_APP_SCANNER, false) == true) {
+            openScannerTrigger++
+            intent.removeExtra(EXTRA_OPEN_IN_APP_SCANNER)
+        }
 
         setContent {
             KartiTheme {
                 KartiAppRoot(
                     viewModel = viewModel,
-                    openScannerOnStart = openScannerOnStart
+                    openScannerTrigger = openScannerTrigger
                 )
             }
         }
@@ -106,6 +114,10 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_OPEN_IN_APP_SCANNER, false)) {
+            openScannerTrigger++
+            intent.removeExtra(EXTRA_OPEN_IN_APP_SCANNER)
+        }
     }
 
     companion object {
@@ -117,13 +129,14 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun KartiAppRoot(
     viewModel: MainViewModel,
-    openScannerOnStart: Boolean
+    openScannerTrigger: Int
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: ROUTE_HOME
+    var pendingScannerAfterCameraGrant by remember { mutableStateOf(false) }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         viewModel.refreshPermissions()
@@ -133,7 +146,13 @@ fun KartiAppRoot(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         viewModel.refreshPermissions()
-        if (!granted) {
+        if (granted && pendingScannerAfterCameraGrant) {
+            pendingScannerAfterCameraGrant = false
+            navController.navigate(ROUTE_SCANNER) {
+                launchSingleTop = true
+            }
+        } else if (!granted) {
+            pendingScannerAfterCameraGrant = false
             Toast.makeText(context, "صلاحية الكاميرا مطلوبة لمسح الكروت", Toast.LENGTH_SHORT).show()
             PermissionHelper.openAppDetailsSettings(context)
         }
@@ -148,9 +167,16 @@ fun KartiAppRoot(
         }
     }
 
-    LaunchedEffect(openScannerOnStart) {
-        if (openScannerOnStart && PermissionHelper.isCameraGranted(context)) {
-            navController.navigate(ROUTE_SCANNER)
+    LaunchedEffect(openScannerTrigger) {
+        if (openScannerTrigger > 0) {
+            if (PermissionHelper.isCameraGranted(context)) {
+                navController.navigate(ROUTE_SCANNER) {
+                    launchSingleTop = true
+                }
+            } else {
+                pendingScannerAfterCameraGrant = true
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
         }
     }
 

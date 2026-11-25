@@ -15,9 +15,9 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
- * Pure Kotlin/Android image preprocessing pipeline for Wi-Fi voucher OCR.
+ * Fast pure Kotlin/Android image preprocessing pipeline for Wi-Fi voucher OCR.
  * Generates contrast-stretched, sharpened, and locally adaptive-thresholded images
- * to handle faint gray ink, shadows, wrinkles, glossy glare, and distant cards.
+ * with branch-free rotation extraction and staged gallery passes for low latency.
  */
 object CardImagePreprocessor {
 
@@ -35,14 +35,16 @@ object CardImagePreprocessor {
     )
 
     /**
-     * Extracts an upright grayscale ROI directly from a YUV_420_888 CameraX ImageProxy Y-plane.
+     * Extracts an upright grayscale ROI directly from a YUV_420_888 CameraX ImageProxy Y-plane
+     * using branch-free rotation loops and optional 2x downsampling if sensor output is oversized.
      */
     fun extractUprightGrayRoi(
         imageProxy: ImageProxy,
-        roiLeftFrac: Float = 0.06f,
-        roiTopFrac: Float = 0.18f,
-        roiRightFrac: Float = 0.94f,
-        roiBottomFrac: Float = 0.82f
+        roiLeftFrac: Float = 0.08f,
+        roiTopFrac: Float = 0.22f,
+        roiRightFrac: Float = 0.92f,
+        roiBottomFrac: Float = 0.78f,
+        maxTargetWidth: Int = 820
     ): GrayscalePatch? {
         val plane = imageProxy.planes.firstOrNull() ?: return null
         val srcW = imageProxy.width
@@ -58,10 +60,13 @@ object CardImagePreprocessor {
         val right = (uprightW * roiRightFrac).toInt().coerceIn(left + 1, uprightW)
         val bottom = (uprightH * roiBottomFrac).toInt().coerceIn(top + 1, uprightH)
 
-        val roiW = right - left
-        val roiH = bottom - top
-        val out = IntArray(roiW * roiH)
+        val rawRoiW = right - left
+        val step = if (rawRoiW > (maxTargetWidth * 1.6f).toInt()) 2 else 1
+        val outW = ((right - left) + step - 1) / step
+        val outH = ((bottom - top) + step - 1) / step
+        if (outW <= 0 || outH <= 0) return null
 
+        val out = IntArray(outW * outH)
         val buffer = plane.buffer.duplicate()
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
@@ -70,61 +75,92 @@ object CardImagePreprocessor {
         var sum = 0L
         var outIdx = 0
 
-        for (uy in top until bottom) {
-            for (ux in left until right) {
-                val sx: Int
-                val sy: Int
-                when (rotation) {
-                    90 -> {
-                        sx = uy
-                        sy = srcH - 1 - ux
+        when (rotation) {
+            90 -> {
+                var uy = top
+                while (uy < bottom) {
+                    var ux = left
+                    while (ux < right) {
+                        val sy = srcH - 1 - ux
+                        val bufIndex = sy * rowStride + uy * pixelStride
+                        val yVal = if (bufIndex in 0 until limit) buffer.get(bufIndex).toInt() and 0xFF else 128
+                        out[outIdx++] = yVal
+                        sum += yVal
+                        ux += step
                     }
-                    180 -> {
-                        sx = srcW - 1 - ux
-                        sy = srcH - 1 - uy
-                    }
-                    270 -> {
-                        sx = srcW - 1 - uy
-                        sy = ux
-                    }
-                    else -> {
-                        sx = ux
-                        sy = uy
-                    }
+                    uy += step
                 }
-                val bufIndex = sy * rowStride + sx * pixelStride
-                val yVal = if (bufIndex in 0 until limit) {
-                    buffer.get(bufIndex).toInt() and 0xFF
-                } else {
-                    128
+            }
+            180 -> {
+                var uy = top
+                while (uy < bottom) {
+                    val sy = srcH - 1 - uy
+                    val rowBase = sy * rowStride
+                    var ux = left
+                    while (ux < right) {
+                        val sx = srcW - 1 - ux
+                        val bufIndex = rowBase + sx * pixelStride
+                        val yVal = if (bufIndex in 0 until limit) buffer.get(bufIndex).toInt() and 0xFF else 128
+                        out[outIdx++] = yVal
+                        sum += yVal
+                        ux += step
+                    }
+                    uy += step
                 }
-                out[outIdx++] = yVal
-                sum += yVal
+            }
+            270 -> {
+                var uy = top
+                while (uy < bottom) {
+                    val sx = srcW - 1 - uy
+                    val colOffset = sx * pixelStride
+                    var ux = left
+                    while (ux < right) {
+                        val bufIndex = ux * rowStride + colOffset
+                        val yVal = if (bufIndex in 0 until limit) buffer.get(bufIndex).toInt() and 0xFF else 128
+                        out[outIdx++] = yVal
+                        sum += yVal
+                        ux += step
+                    }
+                    uy += step
+                }
+            }
+            else -> {
+                var uy = top
+                while (uy < bottom) {
+                    val rowBase = uy * rowStride
+                    var ux = left
+                    while (ux < right) {
+                        val bufIndex = rowBase + ux * pixelStride
+                        val yVal = if (bufIndex in 0 until limit) buffer.get(bufIndex).toInt() and 0xFF else 128
+                        out[outIdx++] = yVal
+                        sum += yVal
+                        ux += step
+                    }
+                    uy += step
+                }
             }
         }
 
-        val avg = if (out.isEmpty()) 128.0 else sum.toDouble() / out.size
-        return GrayscalePatch(luma = out, width = roiW, height = roiH, avgLuma = avg)
+        val avg = if (outIdx == 0) 128.0 else sum.toDouble() / outIdx
+        return GrayscalePatch(luma = out, width = outW, height = outH, avgLuma = avg)
     }
 
-    fun toRawGrayBitmap(patch: GrayscalePatch, minTargetWidth: Int = 960): Bitmap {
+    fun toRawGrayBitmap(patch: GrayscalePatch, minTargetWidth: Int = 720): Bitmap {
         return lumaToUpscaledBitmap(patch.luma, patch.width, patch.height, minTargetWidth)
     }
 
     /**
      * Percentile contrast stretching + subtle gamma darkening + 3x3 unsharp mask.
-     * Excels on faint gray ink inside dashed boxes (e.g., 6301679399, 6755868974, 5853448690).
      */
-    fun toContrastSharpenedBitmap(patch: GrayscalePatch, minTargetWidth: Int = 960): Bitmap {
+    fun toContrastSharpenedBitmap(patch: GrayscalePatch, minTargetWidth: Int = 720): Bitmap {
         val w = patch.width
         val h = patch.height
         val total = w * h
         if (total == 0) return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
 
         val stretched = computeContrastStretched(patch.luma)
-
-        // 3x3 unsharp mask: out = clamp(center + 0.70 * (center - localAvg))
         val sharpened = IntArray(total)
+
         for (y in 0 until h) {
             val rowOffset = y * w
             if (y == 0 || y == h - 1) {
@@ -141,7 +177,7 @@ object CardImagePreprocessor {
                         stretched[i - 1] + c + stretched[i + 1] +
                         stretched[i + w - 1] + stretched[i + w] + stretched[i + w + 1]
                     ) / 9
-                sharpened[i] = (c + ((c - avg) * 0.70f).roundToInt()).coerceIn(0, 255)
+                sharpened[i] = (c + ((c - avg) * 7) / 10).coerceIn(0, 255)
             }
         }
 
@@ -150,9 +186,8 @@ object CardImagePreprocessor {
 
     /**
      * Fast O(W*H) integral-image local adaptive thresholding on contrast-normalized luminance.
-     * Removes shadows, folded paper gradients, colored backgrounds, and dashed-box noise.
      */
-    fun toAdaptiveThresholdBitmap(patch: GrayscalePatch, minTargetWidth: Int = 960): Bitmap {
+    fun toAdaptiveThresholdBitmap(patch: GrayscalePatch, minTargetWidth: Int = 720): Bitmap {
         val w = patch.width
         val h = patch.height
         val total = w * h
@@ -256,7 +291,6 @@ object CardImagePreprocessor {
             val r = (c ushr 16) and 0xFF
             val g = (c ushr 8) and 0xFF
             val b = c and 0xFF
-            // ITU-R BT.601 luminance
             val y = (77 * r + 150 * g + 29 * b) ushr 8
             luma[i] = y
             sum += y
@@ -265,7 +299,7 @@ object CardImagePreprocessor {
         return GrayscalePatch(luma = luma, width = w, height = h, avgLuma = avg)
     }
 
-    fun decodeOrientedGalleryBitmap(context: Context, uri: Uri, maxDim: Int = 2048): Bitmap? {
+    fun decodeOrientedGalleryBitmap(context: Context, uri: Uri, maxDim: Int = 1600): Bitmap? {
         return runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 val source = ImageDecoder.createSource(context.contentResolver, uri)
@@ -347,58 +381,72 @@ object CardImagePreprocessor {
     }
 
     /**
-     * Produces primary multi-scale & multi-enhancement passes for a gallery photo:
-     * 1. Raw full image (upscaled if small)
-     * 2. Center crop (helps distant cards photographed on a surface)
-     * 3. Contrast-stretched + sharpened full image
-     * 4. Contrast-stretched + sharpened center crop
-     * 5. Adaptive-threshold full image
-     * 6. Adaptive-threshold center crop
+     * Fast stage-1 gallery passes (center contrast+sharpen + full raw) for instant recognition on clear photos.
+     */
+    fun buildFastGalleryPasses(source: Bitmap): List<GalleryPassBitmap> {
+        val centerBitmap = extractCenterCropBitmap(source)
+        val centerPatch = bitmapToGrayPatch(centerBitmap)
+        if (centerBitmap !== source) centerBitmap.recycle()
+
+        return listOf(
+            GalleryPassBitmap(
+                bitmap = toContrastSharpenedBitmap(centerPatch, minTargetWidth = 1000),
+                isCenterCrop = true,
+                label = "center_contrast"
+            ),
+            GalleryPassBitmap(
+                bitmap = upscaleIfNeeded(source, minWidth = 1000, copyIfUnchanged = true),
+                isCenterCrop = false,
+                label = "full_raw"
+            )
+        )
+    }
+
+    /**
+     * Deep stage-2 gallery passes for faint, distant, shadowed, or cluttered photos.
+     */
+    fun buildDeepGalleryPasses(source: Bitmap): List<GalleryPassBitmap> {
+        val fullPatch = bitmapToGrayPatch(source)
+        val centerBitmap = extractCenterCropBitmap(source)
+        val centerPatch = bitmapToGrayPatch(centerBitmap)
+
+        return listOf(
+            GalleryPassBitmap(
+                bitmap = upscaleIfNeeded(centerBitmap, minWidth = 1100, copyIfUnchanged = false),
+                isCenterCrop = true,
+                label = "center_raw"
+            ),
+            GalleryPassBitmap(
+                bitmap = toContrastSharpenedBitmap(fullPatch, minTargetWidth = 1000),
+                isCenterCrop = false,
+                label = "full_contrast"
+            ),
+            GalleryPassBitmap(
+                bitmap = toAdaptiveThresholdBitmap(fullPatch, minTargetWidth = 1000),
+                isCenterCrop = false,
+                label = "full_adaptive"
+            ),
+            GalleryPassBitmap(
+                bitmap = toAdaptiveThresholdBitmap(centerPatch, minTargetWidth = 1100),
+                isCenterCrop = true,
+                label = "center_adaptive"
+            )
+        )
+    }
+
+    /**
+     * Full 6-pass list kept for compatibility & unit tests.
      */
     fun buildPrimaryGalleryPasses(source: Bitmap): List<GalleryPassBitmap> {
-        val passes = mutableListOf<GalleryPassBitmap>()
-        val fullPatch = bitmapToGrayPatch(source)
+        return buildFastGalleryPasses(source) + buildDeepGalleryPasses(source)
+    }
 
+    private fun extractCenterCropBitmap(source: Bitmap): Bitmap {
         val cropLeft = (source.width * 0.14f).toInt().coerceIn(0, max(0, source.width - 2))
         val cropTop = (source.height * 0.18f).toInt().coerceIn(0, max(0, source.height - 2))
         val cropW = (source.width * 0.72f).toInt().coerceIn(2, source.width - cropLeft)
         val cropH = (source.height * 0.64f).toInt().coerceIn(2, source.height - cropTop)
-
-        val centerBitmap = Bitmap.createBitmap(source, cropLeft, cropTop, cropW, cropH)
-        val centerPatch = bitmapToGrayPatch(centerBitmap)
-
-        passes += GalleryPassBitmap(
-            bitmap = upscaleIfNeeded(source, minWidth = 1000, copyIfUnchanged = true),
-            isCenterCrop = false,
-            label = "full_raw"
-        )
-        passes += GalleryPassBitmap(
-            bitmap = upscaleIfNeeded(centerBitmap, minWidth = 1100, copyIfUnchanged = false),
-            isCenterCrop = true,
-            label = "center_raw"
-        )
-        passes += GalleryPassBitmap(
-            bitmap = toContrastSharpenedBitmap(fullPatch, minTargetWidth = 1000),
-            isCenterCrop = false,
-            label = "full_contrast"
-        )
-        passes += GalleryPassBitmap(
-            bitmap = toContrastSharpenedBitmap(centerPatch, minTargetWidth = 1100),
-            isCenterCrop = true,
-            label = "center_contrast"
-        )
-        passes += GalleryPassBitmap(
-            bitmap = toAdaptiveThresholdBitmap(fullPatch, minTargetWidth = 1000),
-            isCenterCrop = false,
-            label = "full_adaptive"
-        )
-        passes += GalleryPassBitmap(
-            bitmap = toAdaptiveThresholdBitmap(centerPatch, minTargetWidth = 1100),
-            isCenterCrop = true,
-            label = "center_adaptive"
-        )
-
-        return passes
+        return Bitmap.createBitmap(source, cropLeft, cropTop, cropW, cropH)
     }
 
     fun buildRotatedContrastPass(source: Bitmap, degrees: Float): Bitmap {

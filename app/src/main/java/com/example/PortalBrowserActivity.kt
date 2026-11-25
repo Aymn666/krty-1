@@ -333,8 +333,12 @@ private fun PortalBrowserScreen(
                     hasSubmittedCode = true
                     statusBannerText = "تم إدخال الكود ($code) والضغط على زر الدخول..."
                     coroutineScope.launch {
-                        delay(1300L)
+                        delay(650L)
                         evaluatePortalState(wv)
+                        delay(800L)
+                        if (!isOnBalancePage && !portalErrorDetected) {
+                            evaluatePortalState(wv)
+                        }
                     }
                 } else {
                     statusBannerText = "تم تعبئة الكود ($code) — اضغط دخول من الصفحة"
@@ -351,7 +355,7 @@ private fun PortalBrowserScreen(
     LaunchedEffect(pendingInjectionCode, isPageLoading) {
         val code = pendingInjectionCode
         if (!code.isNullOrBlank() && !isPageLoading && webViewRef != null) {
-            delay(180L)
+            delay(30L)
             tryInjectPendingCode(webViewRef)
         }
     }

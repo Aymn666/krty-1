@@ -159,7 +159,7 @@ fun CameraScannerViewfinderBox(
                 val providerFuture = ProcessCameraProvider.getInstance(ctx)
                 providerFuture.addListener({
                     val provider = providerFuture.get()
-                    val resolutionSelector = ResolutionSelector.Builder()
+                    val previewResolutionSelector = ResolutionSelector.Builder()
                         .setResolutionStrategy(
                             ResolutionStrategy(
                                 Size(1920, 1080),
@@ -168,15 +168,24 @@ fun CameraScannerViewfinderBox(
                         )
                         .build()
 
+                    val analysisResolutionSelector = ResolutionSelector.Builder()
+                        .setResolutionStrategy(
+                            ResolutionStrategy(
+                                Size(1280, 720),
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                            )
+                        )
+                        .build()
+
                     val preview = Preview.Builder()
-                        .setResolutionSelector(resolutionSelector)
+                        .setResolutionSelector(previewResolutionSelector)
                         .build()
                         .also {
                             it.surfaceProvider = previewView.surfaceProvider
                         }
 
                     val analysis = ImageAnalysis.Builder()
-                        .setResolutionSelector(resolutionSelector)
+                        .setResolutionSelector(analysisResolutionSelector)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
                         .also {

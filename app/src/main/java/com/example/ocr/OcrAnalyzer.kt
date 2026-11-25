@@ -19,10 +19,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 
 class OcrAnalyzer(
-    private val analyzeIntervalMs: Long = 240L,
+    private val analyzeIntervalMs: Long = 90L,
     private val onStateChanged: (OcrScanState) -> Unit
 ) : ImageAnalysis.Analyzer {
 
@@ -32,18 +33,19 @@ class OcrAnalyzer(
     private val isLocked = AtomicBoolean(false)
     private val isClosed = AtomicBoolean(false)
     private val burstRequested = AtomicBoolean(false)
+    private val frameCounter = AtomicInteger(0)
     private var lastAnalyzeTimestampMs = 0L
 
     fun reset() {
         isLocked.set(false)
         burstRequested.set(false)
+        frameCounter.set(0)
         voteEngine.reset()
         onStateChanged(OcrScanState.Scanning())
     }
 
     /**
-     * Requests an immediate multi-pass burst analysis on the next camera frame
-     * (used when the user taps the manual capture button).
+     * Requests an immediate multi-pass burst analysis on the next camera frame.
      */
     fun requestBurstCapture() {
         isLocked.set(false)
@@ -99,7 +101,6 @@ class OcrAnalyzer(
                 null
             }
         } finally {
-            // Release ImageProxy immediately so CameraX preview never stalls
             imageProxy.close()
         }
 
@@ -110,36 +111,157 @@ class OcrAnalyzer(
 
         if (isBurst) {
             burstRequested.set(false)
+            runBurstAnalysis(patch, widePatch)
+            return
         }
 
+        val currentFrameIdx = frameCounter.incrementAndGet()
+        runFastFirstFrameAnalysis(patch, runAdaptiveAlways = (currentFrameIdx % 4 == 0))
+    }
+
+    /**
+     * Fast-first live pipeline: runs one crisp contrast-sharpened OCR pass (~25ms),
+     * and triggers adaptive-threshold pass only when Pass 0 finds nothing or every 4th frame.
+     */
+    private fun runFastFirstFrameAnalysis(
+        patch: CardImagePreprocessor.GrayscalePatch,
+        runAdaptiveAlways: Boolean
+    ) {
+        var contrastBmp: Bitmap? = null
+        try {
+            contrastBmp = CardImagePreprocessor.toContrastSharpenedBitmap(patch, minTargetWidth = 720)
+            val cw = contrastBmp.width.toFloat()
+            val ch = contrastBmp.height.toFloat()
+
+            recognizer.process(InputImage.fromBitmap(contrastBmp, 0))
+                .addOnSuccessListener { visionText ->
+                    runCatching { contrastBmp.recycle() }
+                    if (isClosed.get() || isLocked.get()) {
+                        isProcessing.set(false)
+                        return@addOnSuccessListener
+                    }
+
+                    val obs0 = extractObservations(
+                        visionText = visionText,
+                        frameWidth = cw,
+                        frameHeight = ch,
+                        treatAllAsCenter = true,
+                        passIndex = 0
+                    )
+
+                    val needsAdaptiveFallback = runAdaptiveAlways ||
+                        obs0.none { tok -> tok.text.any { it.isDigit() } && tok.text.length >= 6 }
+
+                    if (!needsAdaptiveFallback) {
+                        val state = voteEngine.processMultiPassFrame(
+                            passes = listOf(obs0),
+                            avgLuma = patch.avgLuma,
+                            burstCapture = false
+                        )
+                        if (state is OcrScanState.Locked) {
+                            isLocked.set(true)
+                        }
+                        onStateChanged(state)
+                        isProcessing.set(false)
+                    } else {
+                        runAdaptiveFallbackPass(patch, obs0)
+                    }
+                }
+                .addOnFailureListener {
+                    runCatching { contrastBmp.recycle() }
+                    runAdaptiveFallbackPass(patch, emptyList())
+                }
+        } catch (_: Throwable) {
+            runCatching { contrastBmp?.recycle() }
+            isProcessing.set(false)
+        }
+    }
+
+    private fun runAdaptiveFallbackPass(
+        patch: CardImagePreprocessor.GrayscalePatch,
+        obs0: List<CandidateObservation>
+    ) {
+        var adaptiveBmp: Bitmap? = null
+        try {
+            if (isClosed.get() || isLocked.get()) {
+                isProcessing.set(false)
+                return
+            }
+            adaptiveBmp = CardImagePreprocessor.toAdaptiveThresholdBitmap(patch, minTargetWidth = 720)
+            val aw = adaptiveBmp.width.toFloat()
+            val ah = adaptiveBmp.height.toFloat()
+
+            recognizer.process(InputImage.fromBitmap(adaptiveBmp, 0))
+                .addOnSuccessListener { visionText ->
+                    if (!isClosed.get() && !isLocked.get()) {
+                        val obs1 = extractObservations(
+                            visionText = visionText,
+                            frameWidth = aw,
+                            frameHeight = ah,
+                            treatAllAsCenter = true,
+                            passIndex = 1
+                        )
+                        val passes = if (obs0.isNotEmpty()) listOf(obs0, obs1) else listOf(obs1)
+                        val state = voteEngine.processMultiPassFrame(
+                            passes = passes,
+                            avgLuma = patch.avgLuma,
+                            burstCapture = false
+                        )
+                        if (state is OcrScanState.Locked) {
+                            isLocked.set(true)
+                        }
+                        onStateChanged(state)
+                    }
+                }
+                .addOnFailureListener {
+                    if (!isClosed.get() && !isLocked.get()) {
+                        val state = voteEngine.processMultiPassFrame(
+                            passes = if (obs0.isNotEmpty()) listOf(obs0) else emptyList(),
+                            avgLuma = patch.avgLuma,
+                            burstCapture = false
+                        )
+                        onStateChanged(state)
+                    }
+                }
+                .addOnCompleteListener {
+                    runCatching { adaptiveBmp.recycle() }
+                    isProcessing.set(false)
+                }
+        } catch (_: Throwable) {
+            runCatching { adaptiveBmp?.recycle() }
+            isProcessing.set(false)
+        }
+    }
+
+    private fun runBurstAnalysis(
+        patch: CardImagePreprocessor.GrayscalePatch,
+        widePatch: CardImagePreprocessor.GrayscalePatch?
+    ) {
         val bitmapsToRecycle = mutableListOf<Bitmap>()
         try {
-            val contrastBmp = CardImagePreprocessor.toContrastSharpenedBitmap(patch)
+            val contrastBmp = CardImagePreprocessor.toContrastSharpenedBitmap(patch, minTargetWidth = 840)
             bitmapsToRecycle += contrastBmp
-            val adaptiveBmp = CardImagePreprocessor.toAdaptiveThresholdBitmap(patch)
+            val adaptiveBmp = CardImagePreprocessor.toAdaptiveThresholdBitmap(patch, minTargetWidth = 840)
             bitmapsToRecycle += adaptiveBmp
+            val rawBmp = CardImagePreprocessor.toRawGrayBitmap(patch, minTargetWidth = 840)
+            bitmapsToRecycle += rawBmp
 
             val taskList = mutableListOf(
                 recognizer.process(InputImage.fromBitmap(contrastBmp, 0)),
-                recognizer.process(InputImage.fromBitmap(adaptiveBmp, 0))
+                recognizer.process(InputImage.fromBitmap(adaptiveBmp, 0)),
+                recognizer.process(InputImage.fromBitmap(rawBmp, 0))
             )
             val passDims = mutableListOf(
                 contrastBmp.width.toFloat() to contrastBmp.height.toFloat(),
-                adaptiveBmp.width.toFloat() to adaptiveBmp.height.toFloat()
+                adaptiveBmp.width.toFloat() to adaptiveBmp.height.toFloat(),
+                rawBmp.width.toFloat() to rawBmp.height.toFloat()
             )
 
-            if (isBurst) {
-                val rawBmp = CardImagePreprocessor.toRawGrayBitmap(patch)
-                bitmapsToRecycle += rawBmp
-                taskList += recognizer.process(InputImage.fromBitmap(rawBmp, 0))
-                passDims += rawBmp.width.toFloat() to rawBmp.height.toFloat()
-
-                if (widePatch != null) {
-                    val wideContrast = CardImagePreprocessor.toContrastSharpenedBitmap(widePatch)
-                    bitmapsToRecycle += wideContrast
-                    taskList += recognizer.process(InputImage.fromBitmap(wideContrast, 0))
-                    passDims += wideContrast.width.toFloat() to wideContrast.height.toFloat()
-                }
+            if (widePatch != null) {
+                val wideContrast = CardImagePreprocessor.toContrastSharpenedBitmap(widePatch, minTargetWidth = 840)
+                bitmapsToRecycle += wideContrast
+                taskList += recognizer.process(InputImage.fromBitmap(wideContrast, 0))
+                passDims += wideContrast.width.toFloat() to wideContrast.height.toFloat()
             }
 
             Tasks.whenAllComplete(taskList)
@@ -160,11 +282,10 @@ class OcrAnalyzer(
                                     )
                                 }
                             }
-
                             val state = voteEngine.processMultiPassFrame(
                                 passes = passes,
                                 avgLuma = patch.avgLuma,
-                                burstCapture = isBurst
+                                burstCapture = true
                             )
                             if (state is OcrScanState.Locked) {
                                 isLocked.set(true)
@@ -179,14 +300,6 @@ class OcrAnalyzer(
         } catch (_: Throwable) {
             bitmapsToRecycle.forEach { runCatching { it.recycle() } }
             isProcessing.set(false)
-            if (!isClosed.get() && !isLocked.get()) {
-                onStateChanged(
-                    OcrScanState.Scanning(
-                        isLowLight = patch.avgLuma < 42.0,
-                        statusMessage = "أعد المسح مع إضاءة أفضل"
-                    )
-                )
-            }
         }
     }
 
@@ -199,11 +312,12 @@ class OcrAnalyzer(
             val voteEngine = CardCodeVoteEngine()
 
             try {
-                val primaryPasses = CardImagePreprocessor.buildPrimaryGalleryPasses(sourceBitmap)
                 val allObservations = mutableListOf<List<CandidateObservation>>()
 
+                // Stage 1: Fast 2-pass scan (center contrast + full raw) for instant recognition
+                val fastPasses = CardImagePreprocessor.buildFastGalleryPasses(sourceBitmap)
                 try {
-                    primaryPasses.forEachIndexed { idx, pass ->
+                    fastPasses.forEachIndexed { idx, pass ->
                         val visionText = awaitTextRecognition(recognizer, pass.bitmap)
                         if (visionText != null) {
                             allObservations += extractObservations(
@@ -216,7 +330,34 @@ class OcrAnalyzer(
                         }
                     }
                 } finally {
-                    primaryPasses.forEach { pass -> runCatching { pass.bitmap.recycle() } }
+                    fastPasses.forEach { pass -> runCatching { pass.bitmap.recycle() } }
+                }
+
+                val fastResult = voteEngine.selectMultiPassImageCandidate(
+                    passes = allObservations,
+                    sourceLabel = "المعرض"
+                )
+                if (fastResult is OcrScanState.Locked && fastResult.confidence >= 0.87f) {
+                    return@withContext fastResult
+                }
+
+                // Stage 2: Deep enhancement passes for faint, shadowed, or cluttered gallery photos
+                val deepPasses = CardImagePreprocessor.buildDeepGalleryPasses(sourceBitmap)
+                try {
+                    deepPasses.forEachIndexed { idx, pass ->
+                        val visionText = awaitTextRecognition(recognizer, pass.bitmap)
+                        if (visionText != null) {
+                            allObservations += extractObservations(
+                                visionText = visionText,
+                                frameWidth = pass.bitmap.width.toFloat(),
+                                frameHeight = pass.bitmap.height.toFloat(),
+                                treatAllAsCenter = pass.isCenterCrop,
+                                passIndex = 2 + idx
+                            )
+                        }
+                    }
+                } finally {
+                    deepPasses.forEach { pass -> runCatching { pass.bitmap.recycle() } }
                 }
 
                 var result = voteEngine.selectMultiPassImageCandidate(
@@ -224,11 +365,11 @@ class OcrAnalyzer(
                     sourceLabel = "المعرض"
                 )
 
-                // Fallback rotations if card photo was saved sideways or upside down
+                // Stage 3: Fallback rotations if card photo was saved sideways or upside down
                 if (result is OcrScanState.Error) {
                     val rotatedObservations = mutableListOf<List<CandidateObservation>>()
                     val angles = listOf(90f, 270f, 180f)
-                    angles.forEachIndexed { idx, angle ->
+                    for ((idx, angle) in angles.withIndex()) {
                         val rotatedBmp = CardImagePreprocessor.buildRotatedContrastPass(sourceBitmap, angle)
                         try {
                             val visionText = awaitTextRecognition(recognizer, rotatedBmp)
@@ -244,12 +385,14 @@ class OcrAnalyzer(
                         } finally {
                             runCatching { rotatedBmp.recycle() }
                         }
-                    }
-                    if (rotatedObservations.isNotEmpty()) {
-                        result = voteEngine.selectMultiPassImageCandidate(
+                        val earlyRot = voteEngine.selectMultiPassImageCandidate(
                             passes = rotatedObservations,
                             sourceLabel = "المعرض"
                         )
+                        if (earlyRot is OcrScanState.Locked) {
+                            result = earlyRot
+                            break
+                        }
                     }
                 }
 
@@ -315,7 +458,6 @@ class OcrAnalyzer(
                         )
                     }
 
-                    // Extract alphanumeric segments embedded inside punctuated tokens (e.g., ":6301679399" or "[515292830]")
                     if (lineBox != null) {
                         val lineCx = (lineBox.centerX() / safeW).coerceIn(0f, 1f)
                         val lineCy = (lineBox.centerY() / safeH).coerceIn(0f, 1f)
@@ -340,7 +482,6 @@ class OcrAnalyzer(
                             }
                         }
 
-                        // Collapse split digits/alphanumerics ONLY if separated purely by whitespace
                         if (line.elements.size in 2..3 && lineText.all { it.isLetterOrDigit() || it.isWhitespace() }) {
                             val collapsed = lineText.replace("\\s+".toRegex(), "")
                             if (collapsed.length in 6..12) {

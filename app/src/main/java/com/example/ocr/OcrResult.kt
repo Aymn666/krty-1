@@ -40,8 +40,8 @@ data class CandidateObservation(
  * Designed for Yemeni Wi-Fi / MikroTik cards (8-12 digit numeric & 6-12 char alphanumeric).
  */
 class CardCodeVoteEngine(
-    private val windowSize: Int = 7,
-    private val requiredVotes: Int = 3
+    private val windowSize: Int = 6,
+    private val requiredVotes: Int = 2
 ) {
     private val codeRegex = Regex("^[A-Za-z0-9]{6,12}$")
     private val ipRegex = Regex("""\b\d{1,3}(?:\.\d{1,3}){3}\b""")
@@ -123,7 +123,7 @@ class CardCodeVoteEngine(
             val topExisting = computeTopVote()
             val message = when {
                 lowLightStreak >= 3 -> "الإضاءة ضعيفة — شغّل الفلاش أو أعد المسح مع إضاءة أفضل"
-                unclearTextStreak >= 6 -> "ثبّت الكاميرا واقترب من رقم الكرت داخل الإطار"
+                unclearTextStreak >= 7 -> "ثبّت الكاميرا واقترب من رقم الكرت داخل الإطار"
                 topExisting != null -> "جاري التحقق من الرمز..."
                 else -> "وجّه الكاميرا نحو رقم الكرت"
             }
@@ -174,8 +174,15 @@ class CardCodeVoteEngine(
         val runnerUpVotes = sortedWinners.getOrNull(1)?.value ?: 0
         val avgConf = (confidenceSums[winCode] ?: 0.8f) / winVotes
 
+        val dualPassInstantAgreement = requiredVotes <= 2 &&
+            best.code == winCode &&
+            best.passHits >= 2 &&
+            best.consensusScore >= 115f &&
+            runnerUpVotes == 0
+
         val strongConsensus = winVotes >= requiredVotes ||
-            (winVotes >= 2 && avgConf >= 0.92f && runnerUpVotes <= 1)
+            dualPassInstantAgreement ||
+            (winVotes >= 2 && avgConf >= 0.84f && runnerUpVotes <= 1)
 
         return if (strongConsensus) {
             val alternatives = (rankedAcrossPasses.map { it.code } + sortedWinners.map { it.key })

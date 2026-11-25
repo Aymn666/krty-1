@@ -246,4 +246,34 @@ class CardCodeVoteEngineTest {
         assertEquals("6755868974", locked.code)
         assertTrue(locked.alternatives.contains("6755868971"))
     }
+
+    @Test
+    fun fastDualPassLocksOnSingleFrameAndTwoFramesLockByDefault() {
+        val dualEngine = CardCodeVoteEngine()
+        val obs = listOf(
+            CandidateObservation(
+                text = "6301679399",
+                normalizedHeight = 0.14f,
+                inCenterRoi = true,
+                mlKitConfidence = 0.88f,
+                lineText = "6301679399",
+                centerX = 0.5f,
+                centerY = 0.5f
+            )
+        )
+        val instant = dualEngine.processMultiPassFrame(
+            passes = listOf(obs, obs),
+            avgLuma = 120.0,
+            burstCapture = false
+        )
+        assertTrue(instant is OcrScanState.Locked)
+        assertEquals("6301679399", (instant as OcrScanState.Locked).code)
+
+        val twoFrameEngine = CardCodeVoteEngine()
+        val frame1 = twoFrameEngine.processFrame(obs, avgLuma = 120.0)
+        assertTrue(frame1 is OcrScanState.Scanning)
+        val frame2 = twoFrameEngine.processFrame(obs, avgLuma = 120.0)
+        assertTrue(frame2 is OcrScanState.Locked)
+        assertEquals("6301679399", (frame2 as OcrScanState.Locked).code)
+    }
 }

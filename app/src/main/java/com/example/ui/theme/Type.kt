@@ -21,6 +21,11 @@ val JetBrainsMonoFontFamily = FontFamily(
     Font(R.font.jetbrains_mono, FontWeight.Bold),
 )
 
+val ReemKufiFontFamily = FontFamily(
+    Font(R.font.reem_kufi, FontWeight.Normal),
+    Font(R.font.reem_kufi, FontWeight.Bold),
+)
+
 val KartiTypography = Typography(
     displaySmall = TextStyle(
         fontFamily = CairoFontFamily,
