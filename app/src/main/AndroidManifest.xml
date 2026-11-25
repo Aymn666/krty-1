@@ -54,7 +54,8 @@
         <activity
             android:name=".GalleryPickerActivity"
             android:exported="false"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+            android:theme="@style/Theme.MyApplication"
+            android:windowSoftInputMode="adjustResize" />
 
         <service
             android:name=".service.HotspotNotificationListener"

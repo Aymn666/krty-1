@@ -10,13 +10,8 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.camera.core.Camera
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -35,11 +30,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.CameraAlt
@@ -89,14 +87,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
@@ -110,6 +105,8 @@ import com.example.MainActivity
 import com.example.R
 import com.example.ocr.OcrAnalyzer
 import com.example.ocr.OcrScanState
+import com.example.ui.components.CameraScannerViewfinderBox
+import com.example.ui.components.ScannedCodeReviewPanel
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CyanSecondary
 import com.example.ui.theme.DeepNavySurface
@@ -228,6 +225,8 @@ class ScannerOverlayService :
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.CENTER
+            @Suppress("DEPRECATION")
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
 
         composeView = view
@@ -272,7 +271,8 @@ fun ScannerOverlayContent(
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
     var scanState by remember { mutableStateOf<OcrScanState>(OcrScanState.Scanning()) }
     var showAccessibilityFallback by remember { mutableStateOf(false) }
-    var lockedCode by remember { mutableStateOf<String?>(null) }
+    var vibratedCode by remember { mutableStateOf<String?>(null) }
+    var fallbackCode by remember { mutableStateOf<String?>(null) }
 
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val ocrAnalyzer = remember {
@@ -294,45 +294,41 @@ fun ScannerOverlayContent(
 
     LaunchedEffect(scanState) {
         val current = scanState
-        if (current is OcrScanState.Locked && lockedCode == null) {
-            lockedCode = current.code
+        if (current is OcrScanState.Locked && vibratedCode != current.code) {
+            vibratedCode = current.code
             if (vibrationEnabled) {
                 PermissionHelper.triggerSuccessVibration(context)
             }
-            val accessibilityReady = PermissionHelper.isAccessibilityServiceEnabled(context) ||
-                CardDispatchCoordinator.isAccessibilityConnected.value
-            if (accessibilityReady) {
-                onCodeLockedAndAutoFillReady(current.code, current.confidence)
-            } else {
-                CardDispatchCoordinator.dispatchScannedCode(
-                    context = context,
-                    code = current.code,
-                    confidence = current.confidence
-                )
-                showAccessibilityFallback = true
-            }
+        } else if (current is OcrScanState.Error) {
+            Toast.makeText(context, current.message, Toast.LENGTH_SHORT).show()
+            ocrAnalyzer.reset()
         }
     }
 
     val detectedNetwork = CardDispatchCoordinator.detectedNetworkName.value
+    val lockedState = scanState as? OcrScanState.Locked
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.72f))
-            .padding(horizontal = 16.dp, vertical = 28.dp),
+            .imePadding()
+            .padding(horizontal = 16.dp, vertical = 24.dp),
         contentAlignment = Alignment.Center
     ) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
+                .widthIn(max = 520.dp)
                 .border(1.dp, EmeraldPrimary.copy(alpha = 0.35f), RoundedCornerShape(24.dp)),
             shape = RoundedCornerShape(24.dp),
             color = DeepNavySurface,
             tonalElevation = 8.dp
         ) {
             Column(
-                modifier = Modifier.padding(16.dp),
+                modifier = Modifier
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // Header Row
@@ -368,17 +364,19 @@ fun ScannerOverlayContent(
                     }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        IconButton(
-                            onClick = { torchEnabled = !torchEnabled },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("overlay_flash_toggle")
-                        ) {
-                            Icon(
-                                imageVector = if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                                contentDescription = if (torchEnabled) "إطفاء الفلاش" else "تشغيل الفلاش",
-                                tint = if (torchEnabled) AmberWarning else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        if (lockedState == null && !showAccessibilityFallback) {
+                            IconButton(
+                                onClick = { torchEnabled = !torchEnabled },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("overlay_flash_toggle")
+                            ) {
+                                Icon(
+                                    imageVector = if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                                    contentDescription = if (torchEnabled) "إطفاء الفلاش" else "تشغيل الفلاش",
+                                    tint = if (torchEnabled) AmberWarning else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                         IconButton(
                             onClick = onClose,
@@ -395,20 +393,66 @@ fun ScannerOverlayContent(
                     }
                 }
 
-                if (showAccessibilityFallback && lockedCode != null) {
+                if (showAccessibilityFallback && fallbackCode != null) {
                     AccessibilityFallbackPanel(
-                        code = lockedCode!!,
-                        onCopy = { CardDispatchCoordinator.copyToClipboard(context, lockedCode!!) },
+                        code = fallbackCode!!,
+                        onCopy = { CardDispatchCoordinator.copyToClipboard(context, fallbackCode!!) },
                         onOpenPortal = {
-                            CardDispatchCoordinator.openCaptivePortalOrWifi(context)
+                            CardDispatchCoordinator.openInAppPortal(
+                                context = context,
+                                autoStartScanner = false,
+                                prefillCode = fallbackCode!!
+                            )
                             onClose()
                         },
                         onEnableAccessibility = {
                             PermissionHelper.openAccessibilitySettings(context)
                         },
                         onRescan = {
-                            lockedCode = null
+                            fallbackCode = null
+                            vibratedCode = null
                             showAccessibilityFallback = false
+                            ocrAnalyzer.reset()
+                        }
+                    )
+                } else if (lockedState != null) {
+                    ScannedCodeReviewPanel(
+                        initialCode = lockedState.code,
+                        confidence = lockedState.confidence,
+                        alternatives = lockedState.alternatives,
+                        sourceLabel = lockedState.sourceLabel,
+                        onConnectDirect = { finalCode ->
+                            val accessibilityReady =
+                                PermissionHelper.isAccessibilityServiceEnabled(context) ||
+                                    CardDispatchCoordinator.isAccessibilityConnected.value
+                            if (accessibilityReady) {
+                                onCodeLockedAndAutoFillReady(finalCode, lockedState.confidence)
+                            } else {
+                                CardDispatchCoordinator.saveScannedCardToHistory(
+                                    context = context,
+                                    code = finalCode,
+                                    confidence = lockedState.confidence,
+                                    submitted = false
+                                )
+                                CardDispatchCoordinator.openInAppPortal(
+                                    context = context,
+                                    autoStartScanner = false,
+                                    prefillCode = finalCode
+                                )
+                                onClose()
+                            }
+                        },
+                        onCopyOnly = { finalCode ->
+                            fallbackCode = finalCode
+                            CardDispatchCoordinator.dispatchScannedCode(
+                                context = context,
+                                code = finalCode,
+                                confidence = lockedState.confidence
+                            )
+                            showAccessibilityFallback = true
+                        },
+                        onRescan = {
+                            vibratedCode = null
                             ocrAnalyzer.reset()
                         }
                     )
@@ -419,45 +463,14 @@ fun ScannerOverlayContent(
                             .fillMaxWidth()
                             .height(250.dp)
                             .clip(RoundedCornerShape(18.dp))
-                            .background(Color.Black)
                     ) {
-                        AndroidView(
-                            factory = { ctx ->
-                                val previewView = PreviewView(ctx).apply {
-                                    scaleType = PreviewView.ScaleType.FILL_CENTER
-                                }
-                                val providerFuture = ProcessCameraProvider.getInstance(ctx)
-                                providerFuture.addListener({
-                                    val provider = providerFuture.get()
-                                    val preview = Preview.Builder().build().also {
-                                        it.surfaceProvider = previewView.surfaceProvider
-                                    }
-                                    val analysis = ImageAnalysis.Builder()
-                                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                                        .build()
-                                        .also {
-                                            it.setAnalyzer(cameraExecutor, ocrAnalyzer)
-                                        }
-                                    runCatching {
-                                        provider.unbindAll()
-                                        val camera = provider.bindToLifecycle(
-                                            lifecycleOwner,
-                                            CameraSelector.DEFAULT_BACK_CAMERA,
-                                            preview,
-                                            analysis
-                                        )
-                                        boundCamera = camera
-                                        camera.cameraControl.enableTorch(torchEnabled)
-                                    }
-                                }, ContextCompat.getMainExecutor(ctx))
-                                previewView
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
-
-                        ViewfinderOverlay(
-                            isLocked = scanState is OcrScanState.Locked,
-                            isLowLight = (scanState as? OcrScanState.Scanning)?.isLowLight == true,
+                        CameraScannerViewfinderBox(
+                            lifecycleOwner = lifecycleOwner,
+                            cameraExecutor = cameraExecutor,
+                            ocrAnalyzer = ocrAnalyzer,
+                            torchEnabled = torchEnabled,
+                            scanState = scanState,
+                            onBoundCameraChanged = { boundCamera = it },
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -471,14 +484,17 @@ fun ScannerOverlayContent(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         val candidate = (scanState as? OcrScanState.Scanning)?.candidateCode
-                            ?: (scanState as? OcrScanState.Locked)?.code
 
                         Button(
                             onClick = {
                                 if (!candidate.isNullOrBlank()) {
-                                    scanState = OcrScanState.Locked(candidate, 0.95f)
+                                    scanState = OcrScanState.Locked(
+                                        code = candidate,
+                                        confidence = 0.92f,
+                                        sourceLabel = "التقاط مباشر"
+                                    )
                                 } else {
-                                    ocrAnalyzer.reset()
+                                    ocrAnalyzer.requestBurstCapture()
                                 }
                             },
                             modifier = Modifier
@@ -497,7 +513,7 @@ fun ScannerOverlayContent(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (candidate != null) "تأكيد" else "التقاط",
+                                text = if (candidate != null) "مراجعة" else "التقاط ذكي",
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -665,7 +681,7 @@ fun OcrLiveStatusBanner(scanState: OcrScanState) {
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            text = "تم التقاط الكود بنجاح! جاري الإدخال...",
+                            text = "تم التقاط الكود بنجاح! جاهز للمراجعة والاتصال",
                             color = EmeraldPrimary,
                             style = MaterialTheme.typography.labelLarge
                         )

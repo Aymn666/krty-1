@@ -1,15 +1,14 @@
 package com.example.ui.screens
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,14 +19,18 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
@@ -36,6 +39,7 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,21 +61,19 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.ocr.OcrAnalyzer
 import com.example.ocr.OcrScanState
 import com.example.service.AccessibilityFallbackPanel
 import com.example.service.CardDispatchCoordinator
 import com.example.service.OcrLiveStatusBanner
-import com.example.service.ViewfinderOverlay
+import com.example.ui.components.CameraScannerViewfinderBox
+import com.example.ui.components.ScannedCodeReviewPanel
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.DeepNavySurface
 import com.example.ui.theme.EmeraldPrimary
 import com.example.ui.theme.MidnightBg
 import com.example.utils.PermissionHelper
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
@@ -81,15 +83,14 @@ fun InAppScannerScreen(
     vibrationEnabled: Boolean,
     onClose: () -> Unit
 ) {
-    BackHandler(onBack = onClose)
-
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var torchEnabled by remember { mutableStateOf(initialFlashEnabled) }
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
     var scanState by remember { mutableStateOf<OcrScanState>(OcrScanState.Scanning()) }
-    var lockedCode by remember { mutableStateOf<String?>(null) }
-    var showFallback by remember { mutableStateOf(false) }
+    var vibratedCode by remember { mutableStateOf<String?>(null) }
+    var copiedFallbackCode by remember { mutableStateOf<String?>(null) }
+    var isAnalyzingGallery by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
@@ -99,18 +100,31 @@ fun InAppScannerScreen(
         }
     }
 
+    BackHandler {
+        when {
+            copiedFallbackCode != null -> {
+                copiedFallbackCode = null
+                vibratedCode = null
+                ocrAnalyzer.reset()
+            }
+            scanState is OcrScanState.Locked -> {
+                vibratedCode = null
+                ocrAnalyzer.reset()
+            }
+            else -> onClose()
+        }
+    }
+
     val galleryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
             coroutineScope.launch {
+                isAnalyzingGallery = true
                 val result = OcrAnalyzer.scanImageUri(context, uri)
+                isAnalyzingGallery = false
                 if (result is OcrScanState.Error) {
-                    android.widget.Toast.makeText(
-                        context,
-                        result.message,
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                    Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
                 } else {
                     scanState = result
                 }
@@ -131,73 +145,33 @@ fun InAppScannerScreen(
 
     LaunchedEffect(scanState) {
         val current = scanState
-        if (current is OcrScanState.Locked && lockedCode == null) {
-            lockedCode = current.code
+        if (current is OcrScanState.Locked && vibratedCode != current.code) {
+            vibratedCode = current.code
             if (vibrationEnabled) {
                 PermissionHelper.triggerSuccessVibration(context)
             }
-            CardDispatchCoordinator.saveScannedCardToHistory(
-                context = context,
-                code = current.code,
-                confidence = current.confidence,
-                submitted = false
-            )
-            delay(350L)
-            CardDispatchCoordinator.openInAppPortal(
-                context = context,
-                autoStartScanner = false,
-                prefillCode = current.code
-            )
-            onClose()
+        } else if (current is OcrScanState.Error) {
+            Toast.makeText(context, current.message, Toast.LENGTH_SHORT).show()
+            ocrAnalyzer.reset()
         }
     }
+
+    val lockedState = scanState as? OcrScanState.Locked
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        if (!showFallback) {
-            AndroidView(
-                factory = { ctx ->
-                    val previewView = PreviewView(ctx).apply {
-                        scaleType = PreviewView.ScaleType.FILL_CENTER
-                    }
-                    val providerFuture = ProcessCameraProvider.getInstance(ctx)
-                    providerFuture.addListener({
-                        val provider = providerFuture.get()
-                        val preview = Preview.Builder().build().also {
-                            it.surfaceProvider = previewView.surfaceProvider
-                        }
-                        val analysis = ImageAnalysis.Builder()
-                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                            .build()
-                            .also {
-                                it.setAnalyzer(cameraExecutor, ocrAnalyzer)
-                            }
-                        runCatching {
-                            provider.unbindAll()
-                            val camera = provider.bindToLifecycle(
-                                lifecycleOwner,
-                                CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview,
-                                analysis
-                            )
-                            boundCamera = camera
-                            camera.cameraControl.enableTorch(torchEnabled)
-                        }
-                    }, ContextCompat.getMainExecutor(ctx))
-                    previewView
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-
-            ViewfinderOverlay(
-                isLocked = scanState is OcrScanState.Locked,
-                isLowLight = (scanState as? OcrScanState.Scanning)?.isLowLight == true,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
+        CameraScannerViewfinderBox(
+            lifecycleOwner = lifecycleOwner,
+            cameraExecutor = cameraExecutor,
+            ocrAnalyzer = ocrAnalyzer,
+            torchEnabled = torchEnabled,
+            scanState = scanState,
+            onBoundCameraChanged = { boundCamera = it },
+            modifier = Modifier.fillMaxSize()
+        )
 
         // Top Bar
         Row(
@@ -231,7 +205,7 @@ fun InAppScannerScreen(
                 color = DeepNavySurface.copy(alpha = 0.85f)
             ) {
                 Text(
-                    text = "ماسح الكرت المباشر",
+                    text = "ماسح الكرت الذكي",
                     style = MaterialTheme.typography.titleMedium,
                     color = Color.White,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
@@ -257,40 +231,61 @@ fun InAppScannerScreen(
             }
         }
 
-        // Bottom Controls / Fallback
-        Surface(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(16.dp),
-            shape = RoundedCornerShape(24.dp),
-            color = DeepNavySurface.copy(alpha = 0.95f)
+        // Gallery / Burst Analyzing Overlay
+        AnimatedVisibility(
+            visible = isAnalyzingGallery || (scanState as? OcrScanState.Scanning)?.isAnalyzingPhoto == true,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.fillMaxSize()
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.65f)),
+                contentAlignment = Alignment.Center
             ) {
-                if (showFallback && lockedCode != null) {
-                    AccessibilityFallbackPanel(
-                        code = lockedCode!!,
-                        onCopy = { CardDispatchCoordinator.copyToClipboard(context, lockedCode!!) },
-                        onOpenPortal = {
-                            CardDispatchCoordinator.openCaptivePortalOrWifi(context)
-                            onClose()
-                        },
-                        onEnableAccessibility = { PermissionHelper.openAccessibilitySettings(context) },
-                        onRescan = {
-                            lockedCode = null
-                            showFallback = false
-                            ocrAnalyzer.reset()
-                        }
-                    )
-                } else {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = DeepNavySurface
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            color = EmeraldPrimary,
+                            modifier = Modifier.size(26.dp),
+                            strokeWidth = 3.dp
+                        )
+                        Text(
+                            text = "جاري تحليل الكرت بذكاء...",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
+        // Bottom Live Scanning Controls (hidden when review dialog or fallback is active)
+        if (lockedState == null && copiedFallbackCode == null) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(16.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = DeepNavySurface.copy(alpha = 0.95f)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     OcrLiveStatusBanner(scanState = scanState)
 
                     val candidate = (scanState as? OcrScanState.Scanning)?.candidateCode
-                        ?: (scanState as? OcrScanState.Locked)?.code
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -299,9 +294,13 @@ fun InAppScannerScreen(
                         Button(
                             onClick = {
                                 if (!candidate.isNullOrBlank()) {
-                                    scanState = OcrScanState.Locked(candidate, 0.95f)
+                                    scanState = OcrScanState.Locked(
+                                        code = candidate,
+                                        confidence = 0.92f,
+                                        sourceLabel = "التقاط مباشر"
+                                    )
                                 } else {
-                                    ocrAnalyzer.reset()
+                                    ocrAnalyzer.requestBurstCapture()
                                 }
                             },
                             modifier = Modifier
@@ -316,7 +315,7 @@ fun InAppScannerScreen(
                             Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (candidate != null) "اعتماد ($candidate)" else "التقاط / إعادة",
+                                text = if (candidate != null) "مراجعة ($candidate)" else "التقاط ذكي",
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -341,6 +340,96 @@ fun InAppScannerScreen(
                         }
                     }
                 }
+            }
+        }
+
+        // Editable Review Window OR Copied Fallback Window
+        if (copiedFallbackCode != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = DeepNavySurface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 520.dp)
+                ) {
+                    Box(modifier = Modifier.padding(16.dp)) {
+                        AccessibilityFallbackPanel(
+                            code = copiedFallbackCode!!,
+                            onCopy = { CardDispatchCoordinator.copyToClipboard(context, copiedFallbackCode!!) },
+                            onOpenPortal = {
+                                CardDispatchCoordinator.openInAppPortal(
+                                    context = context,
+                                    autoStartScanner = false,
+                                    prefillCode = copiedFallbackCode!!
+                                )
+                                onClose()
+                            },
+                            onEnableAccessibility = { PermissionHelper.openAccessibilitySettings(context) },
+                            onRescan = {
+                                copiedFallbackCode = null
+                                vibratedCode = null
+                                ocrAnalyzer.reset()
+                            }
+                        )
+                    }
+                }
+            }
+        } else if (lockedState != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .imePadding()
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                ScannedCodeReviewPanel(
+                    initialCode = lockedState.code,
+                    confidence = lockedState.confidence,
+                    alternatives = lockedState.alternatives,
+                    sourceLabel = lockedState.sourceLabel,
+                    onConnectDirect = { finalCode ->
+                        CardDispatchCoordinator.saveScannedCardToHistory(
+                            context = context,
+                            code = finalCode,
+                            confidence = lockedState.confidence,
+                            submitted = false
+                        )
+                        CardDispatchCoordinator.openInAppPortal(
+                            context = context,
+                            autoStartScanner = false,
+                            prefillCode = finalCode
+                        )
+                        onClose()
+                    },
+                    onCopyOnly = { finalCode ->
+                        CardDispatchCoordinator.saveScannedCardToHistory(
+                            context = context,
+                            code = finalCode,
+                            confidence = lockedState.confidence,
+                            submitted = false
+                        )
+                        CardDispatchCoordinator.copyToClipboard(context, finalCode, showToast = true)
+                        copiedFallbackCode = finalCode
+                    },
+                    onRescan = {
+                        vibratedCode = null
+                        ocrAnalyzer.reset()
+                    },
+                    modifier = Modifier
+                        .widthIn(max = 520.dp)
+                        .verticalScroll(rememberScrollState())
+                )
             }
         }
     }

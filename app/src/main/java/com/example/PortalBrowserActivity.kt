@@ -22,11 +22,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -43,13 +38,17 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
@@ -65,6 +64,7 @@ import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -97,7 +97,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.KartiSettings
@@ -106,7 +105,8 @@ import com.example.ocr.OcrScanState
 import com.example.service.CardDispatchCoordinator
 import com.example.service.OcrLiveStatusBanner
 import com.example.service.OverlayBubbleService
-import com.example.service.ViewfinderOverlay
+import com.example.ui.components.CameraScannerViewfinderBox
+import com.example.ui.components.ScannedCodeReviewPanel
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CyanSecondary
 import com.example.ui.theme.DeepNavySurface
@@ -835,7 +835,8 @@ private fun PortalOverlayScannerSheet(
     var torchEnabled by remember { mutableStateOf(initialTorchEnabled) }
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
     var scanState by remember { mutableStateOf<OcrScanState>(OcrScanState.Scanning()) }
-    var handledLock by remember { mutableStateOf(false) }
+    var vibratedCode by remember { mutableStateOf<String?>(null) }
+    var isAnalyzingGallery by remember { mutableStateOf(false) }
 
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val ocrAnalyzer = remember {
@@ -849,7 +850,9 @@ private fun PortalOverlayScannerSheet(
     ) { uri ->
         if (uri != null) {
             coroutineScope.launch {
+                isAnalyzingGallery = true
                 val result = OcrAnalyzer.scanImageUri(context, uri)
+                isAnalyzingGallery = false
                 if (result is OcrScanState.Error) {
                     Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
                 } else {
@@ -872,242 +875,287 @@ private fun PortalOverlayScannerSheet(
 
     LaunchedEffect(scanState) {
         val current = scanState
-        if (current is OcrScanState.Locked && !handledLock) {
-            handledLock = true
+        if (current is OcrScanState.Locked && vibratedCode != current.code) {
+            vibratedCode = current.code
             if (vibrationEnabled) {
                 PermissionHelper.triggerSuccessVibration(context)
             }
-            delay(320L)
-            onCodeLocked(current.code, current.confidence)
+        } else if (current is OcrScanState.Error) {
+            Toast.makeText(context, current.message, Toast.LENGTH_SHORT).show()
+            ocrAnalyzer.reset()
         }
     }
+
+    val lockedState = scanState as? OcrScanState.Locked
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.64f))
+            .background(Color.Black.copy(alpha = 0.68f))
             .windowInsetsPadding(WindowInsets.statusBars)
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 16.dp, vertical = 20.dp),
+            .imePadding()
+            .padding(horizontal = 16.dp, vertical = 16.dp),
         contentAlignment = Alignment.Center
     ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, EmeraldPrimary.copy(alpha = 0.45f), RoundedCornerShape(24.dp)),
-            shape = RoundedCornerShape(24.dp),
-            color = DeepNavySurface,
-            tonalElevation = 10.dp
-        ) {
+        if (lockedState != null) {
             Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                ScannedCodeReviewPanel(
+                    initialCode = lockedState.code,
+                    confidence = lockedState.confidence,
+                    alternatives = lockedState.alternatives,
+                    sourceLabel = lockedState.sourceLabel,
+                    onConnectDirect = { finalCode ->
+                        onCodeLocked(finalCode, lockedState.confidence)
+                    },
+                    onCopyOnly = { finalCode ->
+                        CardDispatchCoordinator.saveScannedCardToHistory(
+                            context = context,
+                            code = finalCode,
+                            confidence = lockedState.confidence,
+                            submitted = false
+                        )
+                        CardDispatchCoordinator.copyToClipboard(context, finalCode, showToast = true)
+                    },
+                    onRescan = {
+                        vibratedCode = null
+                        ocrAnalyzer.reset()
+                    }
+                )
+
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("portal_review_close")
+                ) {
+                    Text("العودة لصفحة البوابة")
+                }
+            }
+        } else {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 520.dp)
+                    .border(1.dp, EmeraldPrimary.copy(alpha = 0.45f), RoundedCornerShape(24.dp)),
+                shape = RoundedCornerShape(24.dp),
+                color = DeepNavySurface,
+                tonalElevation = 10.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Wifi,
-                            contentDescription = null,
-                            tint = EmeraldPrimary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Column {
-                            Text(
-                                text = "امسح كرت الواي فاي",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            if (networkName.isNotBlank()) {
-                                Text(
-                                    text = networkName,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = CyanSecondary
-                                )
-                            }
-                        }
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        if (hasCameraPermission) {
-                            IconButton(
-                                onClick = { torchEnabled = !torchEnabled },
-                                modifier = Modifier
-                                    .size(48.dp)
-                                    .testTag("portal_scanner_flash_toggle")
-                            ) {
-                                Icon(
-                                    imageVector = if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                                    contentDescription = if (torchEnabled) "إطفاء الفلاش" else "تشغيل الفلاش",
-                                    tint = if (torchEnabled) AmberWarning else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                        IconButton(
-                            onClick = onDismiss,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("portal_scanner_close")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "إخفاء الماسح",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                imageVector = Icons.Default.Wifi,
+                                contentDescription = null,
+                                tint = EmeraldPrimary,
+                                modifier = Modifier.size(22.dp)
                             )
+                            Column {
+                                Text(
+                                    text = "امسح كرت الواي فاي",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                if (networkName.isNotBlank()) {
+                                    Text(
+                                        text = networkName,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = CyanSecondary
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (hasCameraPermission) {
+                                IconButton(
+                                    onClick = { torchEnabled = !torchEnabled },
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("portal_scanner_flash_toggle")
+                                ) {
+                                    Icon(
+                                        imageVector = if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                                        contentDescription = if (torchEnabled) "إطفاء الفلاش" else "تشغيل الفلاش",
+                                        tint = if (torchEnabled) AmberWarning else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = onDismiss,
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("portal_scanner_close")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "إخفاء الماسح",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
-                }
 
-                if (hasCameraPermission) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(240.dp)
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(Color.Black)
-                    ) {
-                        AndroidView(
-                            factory = { ctx ->
-                                val previewView = PreviewView(ctx).apply {
-                                    scaleType = PreviewView.ScaleType.FILL_CENTER
-                                }
-                                val providerFuture = ProcessCameraProvider.getInstance(ctx)
-                                providerFuture.addListener({
-                                    val provider = providerFuture.get()
-                                    val preview = Preview.Builder().build().also {
-                                        it.surfaceProvider = previewView.surfaceProvider
-                                    }
-                                    val analysis = ImageAnalysis.Builder()
-                                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                                        .build()
-                                        .also {
-                                            it.setAnalyzer(cameraExecutor, ocrAnalyzer)
-                                        }
-                                    runCatching {
-                                        provider.unbindAll()
-                                        val camera = provider.bindToLifecycle(
-                                            lifecycleOwner,
-                                            CameraSelector.DEFAULT_BACK_CAMERA,
-                                            preview,
-                                            analysis
-                                        )
-                                        boundCamera = camera
-                                        camera.cameraControl.enableTorch(torchEnabled)
-                                    }
-                                }, ContextCompat.getMainExecutor(ctx))
-                                previewView
-                            },
-                            modifier = Modifier.fillMaxSize()
-                        )
-
-                        ViewfinderOverlay(
-                            isLocked = scanState is OcrScanState.Locked,
-                            isLowLight = (scanState as? OcrScanState.Scanning)?.isLowLight == true,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                } else {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = ElevatedNavyCard,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(18.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                    if (hasCameraPermission) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(250.dp)
+                                .clip(RoundedCornerShape(18.dp))
                         ) {
-                            Text(
-                                text = "امنح صلاحية الكاميرا لمسح الكرت مباشرة، أو اختر صورة الكرت من المعرض",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = Color.White
+                            CameraScannerViewfinderBox(
+                                lifecycleOwner = lifecycleOwner,
+                                cameraExecutor = cameraExecutor,
+                                ocrAnalyzer = ocrAnalyzer,
+                                torchEnabled = torchEnabled,
+                                scanState = scanState,
+                                onBoundCameraChanged = { boundCamera = it },
+                                modifier = Modifier.fillMaxSize()
                             )
+
+                            if (isAnalyzingGallery || (scanState as? OcrScanState.Scanning)?.isAnalyzingPhoto == true) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.Black.copy(alpha = 0.6f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        CircularProgressIndicator(
+                                            color = EmeraldPrimary,
+                                            modifier = Modifier.size(24.dp),
+                                            strokeWidth = 3.dp
+                                        )
+                                        Text(
+                                            text = "جاري التحليل الذكي...",
+                                            color = Color.White,
+                                            style = MaterialTheme.typography.titleSmall
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = ElevatedNavyCard,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(18.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = "امنح صلاحية الكاميرا لمسح الكرت مباشرة، أو اختر صورة الكرت من المعرض",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Color.White
+                                )
+                                Button(
+                                    onClick = onRequestCameraPermission,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = EmeraldPrimary,
+                                        contentColor = MidnightBg
+                                    )
+                                ) {
+                                    Text("منح صلاحية الكاميرا", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    OcrLiveStatusBanner(scanState = scanState)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val candidate = (scanState as? OcrScanState.Scanning)?.candidateCode
+
+                        if (hasCameraPermission) {
                             Button(
-                                onClick = onRequestCameraPermission,
+                                onClick = {
+                                    if (!candidate.isNullOrBlank()) {
+                                        scanState = OcrScanState.Locked(
+                                            code = candidate,
+                                            confidence = 0.92f,
+                                            sourceLabel = "التقاط مباشر"
+                                        )
+                                    } else {
+                                        ocrAnalyzer.requestBurstCapture()
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("portal_scanner_capture"),
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = EmeraldPrimary,
                                     contentColor = MidnightBg
                                 )
                             ) {
-                                Text("منح صلاحية الكاميرا", fontWeight = FontWeight.Bold)
+                                Icon(
+                                    imageVector = Icons.Default.CameraAlt,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (candidate != null) "مراجعة" else "التقاط ذكي",
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
-                    }
-                }
 
-                OcrLiveStatusBanner(scanState = scanState)
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val candidate = (scanState as? OcrScanState.Scanning)?.candidateCode
-                        ?: (scanState as? OcrScanState.Locked)?.code
-
-                    if (hasCameraPermission) {
-                        Button(
+                        FilledTonalButton(
                             onClick = {
-                                if (!candidate.isNullOrBlank()) {
-                                    scanState = OcrScanState.Locked(candidate, 0.95f)
-                                } else {
-                                    ocrAnalyzer.reset()
-                                }
+                                galleryPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
                             },
                             modifier = Modifier
-                                .weight(1f)
                                 .height(48.dp)
-                                .testTag("portal_scanner_capture"),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = EmeraldPrimary,
-                                contentColor = MidnightBg
-                            )
+                                .then(if (!hasCameraPermission) Modifier.weight(1f) else Modifier)
+                                .testTag("portal_scanner_gallery")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.CameraAlt,
-                                contentDescription = null,
+                                imageVector = Icons.Default.PhotoLibrary,
+                                contentDescription = "اختيار صورة من المعرض",
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (candidate != null) "تأكيد" else "التقاط",
-                                fontWeight = FontWeight.Bold
-                            )
+                            Text("المعرض", fontWeight = FontWeight.SemiBold)
                         }
-                    }
 
-                    FilledTonalButton(
-                        onClick = {
-                            galleryPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
-                        modifier = Modifier
-                            .height(48.dp)
-                            .then(if (!hasCameraPermission) Modifier.weight(1f) else Modifier)
-                            .testTag("portal_scanner_gallery")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.PhotoLibrary,
-                            contentDescription = "اختيار صورة من المعرض",
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("المعرض", fontWeight = FontWeight.SemiBold)
-                    }
-
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier
-                            .height(48.dp)
-                            .testTag("portal_scanner_dismiss")
-                    ) {
-                        Text("إغلاق")
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .height(48.dp)
+                                .testTag("portal_scanner_dismiss")
+                        ) {
+                            Text("إغلاق")
+                        }
                     }
                 }
             }
