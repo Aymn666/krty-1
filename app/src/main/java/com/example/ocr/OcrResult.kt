@@ -43,14 +43,31 @@ class CardCodeVoteEngine(
     private val windowSize: Int = 6,
     private val requiredVotes: Int = 2
 ) {
-    private val codeRegex = Regex("^[A-Za-z0-9]{6,12}$")
+    private val codeRegex = Regex("^[A-Za-z0-9]{6,14}$")
     private val ipRegex = Regex("""\b\d{1,3}(?:\.\d{1,3}){3}\b""")
-    private val serialLineRegex = Regex("""(?i)\b(?:s/?n|serial|ser)\b[:.\s#-]*[A-Za-z0-9]*""")
-    private val serialTokenRegex = Regex("""(?i)^sn\d{3,10}$""")
-    private val dateLineRegex = Regex("""(?i)\b\d{1,2}[./-](?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{1,2})[./-]\d{2,4}\b""")
-    private val collapsedDateRegex = Regex("""(?i)^\d{1,2}(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\d{2,4}$""")
+
+    // Serial numbers: SN:1914, SN:1842, S/N: 19142830, Serial: ..., تسلسلي ...
+    private val serialTokenRegex = Regex("""(?i)^(?:sn|s/?n|ser)\d{2,12}$""")
+    private val serialLineRegex = Regex("""(?i)(?:\b(?:s\s*[./-]?\s*n|serial|ser)\b|التسلسلي|تسلسلي|رقم\s*التسلسل)\s*[:.\s#-]*([A-Za-z0-9-]+)?""")
+
+    // Dates: 10.Jun.26, 10 Jun 2026, 2026/06/10, 10-06-2026, Exp / تاريخ الانتهاء
+    private val dateLineRegex = Regex(
+        """(?i)(?:\b\d{1,2}[./\s-]+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)[./\s-]+\d{2,4}\b|\b\d{4}[./-]\d{1,2}[./-]\d{1,2}\b|\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b)"""
+    )
+    private val collapsedDateRegex = Regex(
+        """(?i)^(?:\d{1,2}(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\d{2,4}|(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))$"""
+    )
+    private val dateContextRegex = Regex("""(?i)(?:\b(?:exp|expiry|expires|prod|production|valid\s*until|date)\b|تاريخ|انتهاء|إنتاج|انتاج|ينتهي)""")
+
+    // Domains & URLs
     private val domainLineRegex = Regex("""(?i)(?:\bwww\.|\.(?:com|net|org|ye|info|co|io)\b)""")
-    private val unitTokenRegex = Regex("""(?i)^\d+(?:mb|gb|kb|tb|hr|hrs|min|mins|day|days|ry|yer)$""")
+
+    // Quotas, prices, and validity tokens (e.g., 2500MB, 5GB, 1000RY, 40HRS, 12DAYS)
+    private val unitTokenRegex = Regex("""(?i)^\d+(?:mb|gb|kb|tb|mega|giga|hr|hrs|hour|hours|min|mins|day|days|wk|wks|mo|mos|ry|yr|yer|sar|usd|rial|riyal)$""")
+    private val quotaContextRegex = Regex("""(?i)(?:\b(?:mb|gb|kb|tb|mega|giga|megabyte|gigabyte|quota|traffic|bandwidth|unlimited)\b|جيجا|جيجابايت|ميجا|ميجابايت|قيقا|كيلو|سعة|التحميل|باقة|الباقة|حجم)""")
+    private val validityContextRegex = Regex("""(?i)(?:\b(?:valid|validity|expire|expiry|duration|hrs?|hours?|days?|weeks?|months?)\b|صلاحية|الصلاحية|صالحة|المدة|لمدة|يوم|أيام|ايام|ساعة|ساعات|أسبوع|اسبوع|شهر)""")
+    private val priceContextRegex = Regex("""(?i)(?:\b(?:price|cost|ry|yr|yer|rial|riyal|sar)\b|السعر|سعر|فئة|ريال|ر\.ي)""")
+
     private val phoneContextRegex = Regex("""(?i)(?:\+967|00967|تلفون|هاتف|جوال|للتواصل|الادارة|الإدارة|العملاء|tel\b|phone|mob|support)""")
     private val phonePairLineRegex = Regex("""\b0?7[01378]\d{7}\s*[-/|,]\s*0?7[01378]?\d{4,7}\b""")
     private val voucherLabelRegex = Regex("""(?i)(?:رمز|كود|كرت|دخول|الرقم|code|pin|voucher|user|pass|card|login)""")
@@ -61,7 +78,8 @@ class CardCodeVoteEngine(
         "serial", "number", "expired", "minute", "minutes",
         "hours", "mobile", "portal", "captive", "wireless",
         "system", "login", "signin", "welcome", "please",
-        "zainnet", "alkasem", "fadaa", "qamar", "unlimited"
+        "zainnet", "alkasem", "fadaa", "qamar", "unlimited",
+        "validity", "download", "upload", "gigabyte", "megabyte"
     )
 
     private data class FrameVote(
@@ -339,18 +357,44 @@ class CardCodeVoteEngine(
             return false
         }
 
-        // Reject explicit serial-number lines if the token follows SN / Serial
-        if (serialLineRegex.containsMatchIn(lineText)) {
-            val afterSn = lineText.replace(Regex("(?i).*\\b(?:s/?n|serial|ser)\\b[:.\\s#-]*"), "")
-            if (afterSn.startsWith(cleaned, ignoreCase = true) || cleaned.length <= 6) {
+        // Reject serial numbers on SN / Serial lines (e.g., SN:1914, SN:1842, SN:19142830)
+        val snMatch = serialLineRegex.find(lineText)
+        if (snMatch != null) {
+            val attachedSerial = snMatch.groupValues.getOrNull(1)?.replace("-", "")?.trim().orEmpty()
+            if (attachedSerial.contains(cleaned, ignoreCase = true) ||
+                cleaned.length <= 6 ||
+                !voucherLabelRegex.containsMatchIn(lineText)
+            ) {
                 return false
             }
         }
 
-        // Reject dates on the line when the collapsed line matches the date
+        // Reject dates on the line (e.g., 10.Jun.26, 2026/06/10, Exp: 10-06-2026)
         if (dateLineRegex.containsMatchIn(lineText)) {
             val collapsedLine = lineText.replace(Regex("[.\\-/\\s]"), "")
             if (collapsedLine.contains(cleaned, ignoreCase = true)) {
+                return false
+            }
+        }
+        if (dateContextRegex.containsMatchIn(lineText) &&
+            !voucherLabelRegex.containsMatchIn(lineText) &&
+            cleaned.all { it.isDigit() }
+        ) {
+            return false
+        }
+
+        // Reject card prices, data quotas/packages, and validity durations (e.g., 2500MB, 5GB, 1000RY, 12Days, 40Hrs)
+        val hasMetadataContext = quotaContextRegex.containsMatchIn(lineText) ||
+            validityContextRegex.containsMatchIn(lineText) ||
+            priceContextRegex.containsMatchIn(lineText)
+        if (hasMetadataContext) {
+            val attachedUnitRegex = Regex(
+                """(?i)\b${Regex.escape(cleaned)}\s*(?:mb|gb|kb|tb|mega|giga|ry|yr|yer|rial|riyal|hr|hrs|hours?|days?|weeks?|months?|ميجا|جيجا|قيقا|كيلو|ريال|يوم|أيام|ايام|ساعة|ساعات)\b"""
+            )
+            if (attachedUnitRegex.containsMatchIn(lineText)) {
+                return false
+            }
+            if (!voucherLabelRegex.containsMatchIn(lineText) && cleaned.all { it.isDigit() }) {
                 return false
             }
         }
@@ -387,20 +431,20 @@ class CardCodeVoteEngine(
         val allDigits = cleaned.all { it.isDigit() }
         val hasLettersAndDigits = cleaned.any { it.isLetter() } && cleaned.any { it.isDigit() }
 
-        // Length preference tuned for Yemeni Wi-Fi vouchers (8-11 digits or 7-10 alphanumeric)
+        // Length preference tuned for Wi-Fi vouchers (8-12 digits or 6-12 alphanumeric)
         score += when (cleaned.length) {
             in 8..11 -> 44f
             7, 12 -> 32f
             else -> 20f
         }
 
-        // Format strength
-        if (allDigits && cleaned.length in 8..12) {
+        // Format strength: pure English digits or mixed English letters + digits (no spaces)
+        if (allDigits && cleaned.length in 8..14) {
             score += 38f
         } else if (hasLettersAndDigits) {
             score += 40f
-            // Lowercase 7-10 mixed alphanumeric (like 7gvmv8d5, 6l6gns7w) is a very common voucher style
-            if (cleaned.none { it.isUpperCase() } && cleaned.length in 7..10) {
+            // Lowercase 6-10 mixed alphanumeric (like 7gvmv8d5, 6l6gns7w) is a very common voucher style
+            if (cleaned.none { it.isUpperCase() } && cleaned.length in 6..10) {
                 score += 8f
             }
         } else {
@@ -416,12 +460,12 @@ class CardCodeVoteEngine(
             score -= 18f
         }
 
-        // Center ROI + smooth center proximity
+        // Center ROI + smooth center proximity (codes are centered in the card box/scratch area)
         if (obs.inCenterRoi) {
-            score += 42f
+            score += 46f
         }
         val distFromCenter = hypot((obs.centerX - 0.5f).toDouble(), (obs.centerY - 0.5f).toDouble()).toFloat()
-        score += ((1f - (distFromCenter * 1.4f)).coerceIn(0f, 1f)) * 20f
+        score += ((1f - (distFromCenter * 1.4f)).coerceIn(0f, 1f)) * 24f
 
         // Voucher label context (e.g., "رمز الدخول", "PIN", "Code")
         if (voucherLabelRegex.containsMatchIn(obs.lineText) && !serialLineRegex.containsMatchIn(obs.lineText)) {

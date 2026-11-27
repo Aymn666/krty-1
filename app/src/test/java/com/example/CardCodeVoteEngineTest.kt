@@ -276,4 +276,68 @@ class CardCodeVoteEngineTest {
         assertTrue(frame2 is OcrScanState.Locked)
         assertEquals("6301679399", (frame2 as OcrScanState.Locked).code)
     }
+
+    @Test
+    fun ignoresPricesQuotasValiditySerialsAndDatesWhilePickingCenteredCode() {
+        val engine = CardCodeVoteEngine()
+        val result = engine.selectSingleImageCandidate(
+            listOf(
+                CandidateObservation(
+                    text = "6l6gns7w",
+                    normalizedHeight = 0.11f,
+                    inCenterRoi = true,
+                    mlKitConfidence = 0.89f,
+                    lineText = "6l6gns7w",
+                    centerX = 0.5f,
+                    centerY = 0.5f
+                ),
+                CandidateObservation(
+                    text = "1000RY",
+                    normalizedHeight = 0.08f,
+                    inCenterRoi = false,
+                    mlKitConfidence = 0.95f,
+                    lineText = "السعر 1000RY"
+                ),
+                CandidateObservation(
+                    text = "2500MB",
+                    normalizedHeight = 0.08f,
+                    inCenterRoi = true,
+                    mlKitConfidence = 0.94f,
+                    lineText = "2500MB سعة التحميل"
+                ),
+                CandidateObservation(
+                    text = "40HOURS",
+                    normalizedHeight = 0.08f,
+                    inCenterRoi = false,
+                    mlKitConfidence = 0.94f,
+                    lineText = "الصلاحية 40HOURS"
+                ),
+                CandidateObservation(
+                    text = "19142830",
+                    normalizedHeight = 0.08f,
+                    inCenterRoi = true,
+                    mlKitConfidence = 0.95f,
+                    lineText = "SN: 19142830"
+                ),
+                CandidateObservation(
+                    text = "20260610",
+                    normalizedHeight = 0.07f,
+                    inCenterRoi = false,
+                    mlKitConfidence = 0.95f,
+                    lineText = "2026/06/10"
+                ),
+                CandidateObservation(
+                    text = "10Jun26",
+                    normalizedHeight = 0.07f,
+                    inCenterRoi = false,
+                    mlKitConfidence = 0.95f,
+                    lineText = "10.Jun.26"
+                )
+            )
+        )
+        assertTrue(result is OcrScanState.Locked)
+        val locked = result as OcrScanState.Locked
+        assertEquals("6l6gns7w", locked.code)
+        assertTrue(locked.alternatives.isEmpty())
+    }
 }

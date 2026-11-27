@@ -31,6 +31,7 @@ class OcrAnalyzer(
     private val voteEngine = CardCodeVoteEngine()
     private val isProcessing = AtomicBoolean(false)
     private val isLocked = AtomicBoolean(false)
+    private val isPausedForGallery = AtomicBoolean(false)
     private val isClosed = AtomicBoolean(false)
     private val burstRequested = AtomicBoolean(false)
     private val frameCounter = AtomicInteger(0)
@@ -38,10 +39,26 @@ class OcrAnalyzer(
 
     fun reset() {
         isLocked.set(false)
+        isPausedForGallery.set(false)
         burstRequested.set(false)
         frameCounter.set(0)
         voteEngine.reset()
         onStateChanged(OcrScanState.Scanning())
+    }
+
+    fun pauseForGallery() {
+        isPausedForGallery.set(true)
+        burstRequested.set(false)
+    }
+
+    fun resumeFromGallery() {
+        isPausedForGallery.set(false)
+    }
+
+    fun lockExternalCode() {
+        isLocked.set(true)
+        isPausedForGallery.set(false)
+        burstRequested.set(false)
     }
 
     /**
@@ -49,6 +66,7 @@ class OcrAnalyzer(
      */
     fun requestBurstCapture() {
         isLocked.set(false)
+        isPausedForGallery.set(false)
         burstRequested.set(true)
         onStateChanged(
             OcrScanState.Scanning(
@@ -65,7 +83,7 @@ class OcrAnalyzer(
 
     @OptIn(ExperimentalGetImage::class)
     override fun analyze(imageProxy: ImageProxy) {
-        if (isClosed.get() || isLocked.get()) {
+        if (isClosed.get() || isLocked.get() || isPausedForGallery.get()) {
             imageProxy.close()
             return
         }
@@ -88,14 +106,15 @@ class OcrAnalyzer(
                 return
             }
             lastAnalyzeTimestampMs = now
-            patch = CardImagePreprocessor.extractUprightGrayRoi(imageProxy)
+            patch = CardImagePreprocessor.extractUprightGrayRoi(imageProxy, maxTargetWidth = 800)
             widePatch = if (isBurst) {
                 CardImagePreprocessor.extractUprightGrayRoi(
                     imageProxy = imageProxy,
                     roiLeftFrac = 0.02f,
                     roiTopFrac = 0.08f,
                     roiRightFrac = 0.98f,
-                    roiBottomFrac = 0.92f
+                    roiBottomFrac = 0.92f,
+                    maxTargetWidth = 800
                 )
             } else {
                 null
@@ -116,7 +135,7 @@ class OcrAnalyzer(
         }
 
         val currentFrameIdx = frameCounter.incrementAndGet()
-        runFastFirstFrameAnalysis(patch, runAdaptiveAlways = (currentFrameIdx % 4 == 0))
+        runFastFirstFrameAnalysis(patch, runAdaptiveAlways = (currentFrameIdx % 2 == 0))
     }
 
     /**
@@ -136,7 +155,7 @@ class OcrAnalyzer(
             recognizer.process(InputImage.fromBitmap(contrastBmp, 0))
                 .addOnSuccessListener { visionText ->
                     runCatching { contrastBmp.recycle() }
-                    if (isClosed.get() || isLocked.get()) {
+                    if (isClosed.get() || isLocked.get() || isPausedForGallery.get()) {
                         isProcessing.set(false)
                         return@addOnSuccessListener
                     }
@@ -158,10 +177,12 @@ class OcrAnalyzer(
                             avgLuma = patch.avgLuma,
                             burstCapture = false
                         )
-                        if (state is OcrScanState.Locked) {
-                            isLocked.set(true)
+                        if (!isClosed.get() && !isLocked.get() && !isPausedForGallery.get()) {
+                            if (state is OcrScanState.Locked) {
+                                isLocked.set(true)
+                            }
+                            onStateChanged(state)
                         }
-                        onStateChanged(state)
                         isProcessing.set(false)
                     } else {
                         runAdaptiveFallbackPass(patch, obs0)
@@ -183,7 +204,7 @@ class OcrAnalyzer(
     ) {
         var adaptiveBmp: Bitmap? = null
         try {
-            if (isClosed.get() || isLocked.get()) {
+            if (isClosed.get() || isLocked.get() || isPausedForGallery.get()) {
                 isProcessing.set(false)
                 return
             }
@@ -193,7 +214,7 @@ class OcrAnalyzer(
 
             recognizer.process(InputImage.fromBitmap(adaptiveBmp, 0))
                 .addOnSuccessListener { visionText ->
-                    if (!isClosed.get() && !isLocked.get()) {
+                    if (!isClosed.get() && !isLocked.get() && !isPausedForGallery.get()) {
                         val obs1 = extractObservations(
                             visionText = visionText,
                             frameWidth = aw,
@@ -214,7 +235,7 @@ class OcrAnalyzer(
                     }
                 }
                 .addOnFailureListener {
-                    if (!isClosed.get() && !isLocked.get()) {
+                    if (!isClosed.get() && !isLocked.get() && !isPausedForGallery.get()) {
                         val state = voteEngine.processMultiPassFrame(
                             passes = if (obs0.isNotEmpty()) listOf(obs0) else emptyList(),
                             avgLuma = patch.avgLuma,
@@ -239,11 +260,11 @@ class OcrAnalyzer(
     ) {
         val bitmapsToRecycle = mutableListOf<Bitmap>()
         try {
-            val contrastBmp = CardImagePreprocessor.toContrastSharpenedBitmap(patch, minTargetWidth = 840)
+            val contrastBmp = CardImagePreprocessor.toContrastSharpenedBitmap(patch, minTargetWidth = 800)
             bitmapsToRecycle += contrastBmp
-            val adaptiveBmp = CardImagePreprocessor.toAdaptiveThresholdBitmap(patch, minTargetWidth = 840)
+            val adaptiveBmp = CardImagePreprocessor.toAdaptiveThresholdBitmap(patch, minTargetWidth = 800)
             bitmapsToRecycle += adaptiveBmp
-            val rawBmp = CardImagePreprocessor.toRawGrayBitmap(patch, minTargetWidth = 840)
+            val rawBmp = CardImagePreprocessor.toRawGrayBitmap(patch, minTargetWidth = 800)
             bitmapsToRecycle += rawBmp
 
             val taskList = mutableListOf(
@@ -258,7 +279,7 @@ class OcrAnalyzer(
             )
 
             if (widePatch != null) {
-                val wideContrast = CardImagePreprocessor.toContrastSharpenedBitmap(widePatch, minTargetWidth = 840)
+                val wideContrast = CardImagePreprocessor.toContrastSharpenedBitmap(widePatch, minTargetWidth = 800)
                 bitmapsToRecycle += wideContrast
                 taskList += recognizer.process(InputImage.fromBitmap(wideContrast, 0))
                 passDims += wideContrast.width.toFloat() to wideContrast.height.toFloat()
@@ -267,7 +288,7 @@ class OcrAnalyzer(
             Tasks.whenAllComplete(taskList)
                 .addOnCompleteListener {
                     try {
-                        if (!isClosed.get() && !isLocked.get()) {
+                        if (!isClosed.get() && !isLocked.get() && !isPausedForGallery.get()) {
                             val passes = mutableListOf<List<CandidateObservation>>()
                             taskList.forEachIndexed { idx, task ->
                                 if (task.isSuccessful) {
@@ -337,7 +358,7 @@ class OcrAnalyzer(
                     passes = allObservations,
                     sourceLabel = "المعرض"
                 )
-                if (fastResult is OcrScanState.Locked && fastResult.confidence >= 0.87f) {
+                if (fastResult is OcrScanState.Locked && fastResult.confidence >= 0.80f) {
                     return@withContext fastResult
                 }
 
@@ -419,7 +440,8 @@ class OcrAnalyzer(
                 }
         }
 
-        private val embeddedTokenRegex = Regex("""[A-Za-z0-9]{6,12}""")
+        private val embeddedTokenRegex = Regex("""[A-Za-z0-9]{6,14}""")
+        private val spacedVoucherRegex = Regex("""(?:^|[:\s-])([A-Za-z0-9]{2,6}(?:\s+[A-Za-z0-9]{2,6}){1,2})(?:\s|$)""")
 
         private fun extractObservations(
             visionText: Text,
@@ -484,7 +506,7 @@ class OcrAnalyzer(
 
                         if (line.elements.size in 2..3 && lineText.all { it.isLetterOrDigit() || it.isWhitespace() }) {
                             val collapsed = lineText.replace("\\s+".toRegex(), "")
-                            if (collapsed.length in 6..12) {
+                            if (collapsed.length in 6..14) {
                                 list.add(
                                     CandidateObservation(
                                         text = collapsed,
@@ -497,6 +519,25 @@ class OcrAnalyzer(
                                         passIndex = passIndex
                                     )
                                 )
+                            }
+                        } else {
+                            // Also recover space-split voucher codes on labeled lines (e.g. "PIN: 6301 679399")
+                            for (match in spacedVoucherRegex.findAll(lineText)) {
+                                val collapsed = match.groupValues[1].replace("\\s+".toRegex(), "")
+                                if (collapsed.length in 6..14 && collapsed.any { it.isDigit() }) {
+                                    list.add(
+                                        CandidateObservation(
+                                            text = collapsed,
+                                            normalizedHeight = lineBox.height() / safeH,
+                                            inCenterRoi = lineInRoi,
+                                            mlKitConfidence = (lineConf - 0.04f).coerceAtLeast(0.5f),
+                                            lineText = lineText,
+                                            centerX = lineCx,
+                                            centerY = lineCy,
+                                            passIndex = passIndex
+                                        )
+                                    )
+                                }
                             }
                         }
                     }

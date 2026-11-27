@@ -59,4 +59,23 @@ class CardImagePreprocessorTest {
         galleryPasses.forEach { it.bitmap.recycle() }
         bitmap.recycle()
     }
+
+    @Test
+    fun canvasResizeCapsOversizedGalleryBitmapTo800px() {
+        val large = Bitmap.createBitmap(2400, 1200, Bitmap.Config.ARGB_8888)
+        val resized = CardImagePreprocessor.resizeToMaxWidthViaCanvas(large, maxWidth = 800)
+
+        assertEquals(800, resized.width)
+        assertEquals(400, resized.height)
+
+        val fastPasses = CardImagePreprocessor.buildFastGalleryPasses(large)
+        assertEquals(2, fastPasses.size)
+        fastPasses.forEach { pass ->
+            assertTrue("Expected pass ${pass.label} width <= 800, got ${pass.bitmap.width}", pass.bitmap.width <= 800)
+            pass.bitmap.recycle()
+        }
+
+        if (resized !== large) resized.recycle()
+        large.recycle()
+    }
 }

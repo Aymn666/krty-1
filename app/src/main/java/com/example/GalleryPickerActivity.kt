@@ -108,6 +108,22 @@ class GalleryPickerActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(MidnightBg.toArgb())
         )
 
+        if (savedInstanceState != null) {
+            isAnalyzing = savedInstanceState.getBoolean(KEY_IS_ANALYZING, false)
+            val savedCode = savedInstanceState.getString(KEY_LOCKED_CODE)
+            val savedError = savedInstanceState.getString(KEY_ERROR_MESSAGE)
+            scanResult = when {
+                !savedCode.isNullOrBlank() -> OcrScanState.Locked(
+                    code = savedCode,
+                    confidence = savedInstanceState.getFloat(KEY_LOCKED_CONFIDENCE, 0.95f),
+                    alternatives = savedInstanceState.getStringArrayList(KEY_LOCKED_ALTS).orEmpty(),
+                    sourceLabel = savedInstanceState.getString(KEY_LOCKED_SOURCE, "المعرض")
+                )
+                !savedError.isNullOrBlank() -> OcrScanState.Error(savedError)
+                else -> null
+            }
+        }
+
         setContent {
             KartiTheme {
                 Box(
@@ -277,11 +293,37 @@ class GalleryPickerActivity : ComponentActivity() {
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(KEY_IS_ANALYZING, isAnalyzing)
+        when (val current = scanResult) {
+            is OcrScanState.Locked -> {
+                outState.putString(KEY_LOCKED_CODE, current.code)
+                outState.putFloat(KEY_LOCKED_CONFIDENCE, current.confidence)
+                outState.putStringArrayList(KEY_LOCKED_ALTS, ArrayList(current.alternatives))
+                outState.putString(KEY_LOCKED_SOURCE, current.sourceLabel)
+            }
+            is OcrScanState.Error -> {
+                outState.putString(KEY_ERROR_MESSAGE, current.message)
+            }
+            else -> Unit
+        }
+    }
+
     private fun launchPicker() {
         isAnalyzing = true
         scanResult = null
         pickMediaLauncher.launch(
             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
         )
+    }
+
+    companion object {
+        private const val KEY_IS_ANALYZING = "key_is_analyzing"
+        private const val KEY_LOCKED_CODE = "key_locked_code"
+        private const val KEY_LOCKED_CONFIDENCE = "key_locked_confidence"
+        private const val KEY_LOCKED_ALTS = "key_locked_alts"
+        private const val KEY_LOCKED_SOURCE = "key_locked_source"
+        private const val KEY_ERROR_MESSAGE = "key_error_message"
     }
 }

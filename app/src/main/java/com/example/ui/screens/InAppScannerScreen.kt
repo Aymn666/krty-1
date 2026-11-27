@@ -50,9 +50,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -85,18 +87,51 @@ fun InAppScannerScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var torchEnabled by remember { mutableStateOf(initialFlashEnabled) }
+    var torchEnabled by rememberSaveable { mutableStateOf(initialFlashEnabled) }
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
-    var scanState by remember { mutableStateOf<OcrScanState>(OcrScanState.Scanning()) }
-    var vibratedCode by remember { mutableStateOf<String?>(null) }
-    var copiedFallbackCode by remember { mutableStateOf<String?>(null) }
-    var isAnalyzingGallery by remember { mutableStateOf(false) }
+
+    // Live camera scanning status (transient)
+    var liveScanState by remember { mutableStateOf<OcrScanState>(OcrScanState.Scanning()) }
+
+    // Extracted code state — strictly separated from camera lifecycle/cleanup so gallery & camera results persist
+    val lockedCodeState = rememberSaveable { mutableStateOf<String?>(null) }
+    val lockedConfidenceState = rememberSaveable { mutableFloatStateOf(0.95f) }
+    val lockedAlternativesState = rememberSaveable { mutableStateOf(ArrayList<String>()) }
+    val lockedSourceLabelState = rememberSaveable { mutableStateOf("الكاميرا") }
+
+    var vibratedCode by rememberSaveable { mutableStateOf<String?>(null) }
+    var copiedFallbackCode by rememberSaveable { mutableStateOf<String?>(null) }
+    val isAnalyzingGalleryState = remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val ocrAnalyzer = remember {
         OcrAnalyzer { newState ->
-            scanState = newState
+            // Do not allow live camera callbacks to overwrite an extracted code or active gallery scan
+            if (lockedCodeState.value != null || isAnalyzingGalleryState.value) {
+                return@OcrAnalyzer
+            }
+            when (newState) {
+                is OcrScanState.Locked -> {
+                    lockedCodeState.value = newState.code
+                    lockedConfidenceState.floatValue = newState.confidence
+                    lockedAlternativesState.value = ArrayList(newState.alternatives)
+                    lockedSourceLabelState.value = newState.sourceLabel
+                }
+                is OcrScanState.Error -> {
+                    Toast.makeText(context, newState.message, Toast.LENGTH_SHORT).show()
+                    liveScanState = OcrScanState.Scanning()
+                }
+                is OcrScanState.Scanning -> {
+                    liveScanState = newState
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(lockedCodeState.value) {
+        if (lockedCodeState.value != null) {
+            ocrAnalyzer.lockExternalCode()
         }
     }
 
@@ -105,10 +140,12 @@ fun InAppScannerScreen(
             copiedFallbackCode != null -> {
                 copiedFallbackCode = null
                 vibratedCode = null
+                lockedCodeState.value = null
                 ocrAnalyzer.reset()
             }
-            scanState is OcrScanState.Locked -> {
+            lockedCodeState.value != null -> {
                 vibratedCode = null
+                lockedCodeState.value = null
                 ocrAnalyzer.reset()
             }
             else -> onClose()
@@ -118,20 +155,42 @@ fun InAppScannerScreen(
     val galleryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        if (uri != null) {
-            coroutineScope.launch {
-                isAnalyzingGallery = true
-                val result = OcrAnalyzer.scanImageUri(context, uri)
-                isAnalyzingGallery = false
-                if (result is OcrScanState.Error) {
+        if (uri == null) {
+            if (lockedCodeState.value == null) {
+                ocrAnalyzer.resumeFromGallery()
+            }
+            return@rememberLauncherForActivityResult
+        }
+
+        ocrAnalyzer.pauseForGallery()
+        coroutineScope.launch {
+            isAnalyzingGalleryState.value = true
+            val result = OcrAnalyzer.scanImageUri(context, uri)
+            isAnalyzingGalleryState.value = false
+            when (result) {
+                is OcrScanState.Locked -> {
+                    ocrAnalyzer.lockExternalCode()
+                    lockedCodeState.value = result.code
+                    lockedConfidenceState.floatValue = result.confidence
+                    lockedAlternativesState.value = ArrayList(result.alternatives)
+                    lockedSourceLabelState.value = result.sourceLabel
+                }
+                is OcrScanState.Error -> {
                     Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
-                } else {
-                    scanState = result
+                    if (lockedCodeState.value == null) {
+                        ocrAnalyzer.resumeFromGallery()
+                    }
+                }
+                is OcrScanState.Scanning -> {
+                    if (lockedCodeState.value == null) {
+                        ocrAnalyzer.resumeFromGallery()
+                    }
                 }
             }
         }
     }
 
+    // Camera/analyzer cleanup NEVER clears or resets the extracted code
     DisposableEffect(Unit) {
         onDispose {
             ocrAnalyzer.close()
@@ -143,20 +202,31 @@ fun InAppScannerScreen(
         boundCamera?.cameraControl?.enableTorch(torchEnabled)
     }
 
-    LaunchedEffect(scanState) {
-        val current = scanState
-        if (current is OcrScanState.Locked && vibratedCode != current.code) {
-            vibratedCode = current.code
-            if (vibrationEnabled) {
-                PermissionHelper.triggerSuccessVibration(context)
-            }
-        } else if (current is OcrScanState.Error) {
-            Toast.makeText(context, current.message, Toast.LENGTH_SHORT).show()
-            ocrAnalyzer.reset()
+    val activeLockedCode = lockedCodeState.value
+    val lockedState = remember(
+        activeLockedCode,
+        lockedConfidenceState.floatValue,
+        lockedAlternativesState.value,
+        lockedSourceLabelState.value
+    ) {
+        activeLockedCode?.let { code ->
+            OcrScanState.Locked(
+                code = code,
+                confidence = lockedConfidenceState.floatValue,
+                alternatives = lockedAlternativesState.value,
+                sourceLabel = lockedSourceLabelState.value
+            )
         }
     }
 
-    val lockedState = scanState as? OcrScanState.Locked
+    LaunchedEffect(activeLockedCode) {
+        if (activeLockedCode != null && vibratedCode != activeLockedCode) {
+            vibratedCode = activeLockedCode
+            if (vibrationEnabled) {
+                PermissionHelper.triggerSuccessVibration(context)
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -168,7 +238,7 @@ fun InAppScannerScreen(
             cameraExecutor = cameraExecutor,
             ocrAnalyzer = ocrAnalyzer,
             torchEnabled = torchEnabled,
-            scanState = scanState,
+            scanState = lockedState ?: liveScanState,
             onBoundCameraChanged = { boundCamera = it },
             modifier = Modifier.fillMaxSize()
         )
@@ -233,7 +303,7 @@ fun InAppScannerScreen(
 
         // Gallery / Burst Analyzing Overlay
         AnimatedVisibility(
-            visible = isAnalyzingGallery || (scanState as? OcrScanState.Scanning)?.isAnalyzingPhoto == true,
+            visible = isAnalyzingGalleryState.value || (liveScanState as? OcrScanState.Scanning)?.isAnalyzingPhoto == true,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -283,9 +353,9 @@ fun InAppScannerScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    OcrLiveStatusBanner(scanState = scanState)
+                    OcrLiveStatusBanner(scanState = liveScanState)
 
-                    val candidate = (scanState as? OcrScanState.Scanning)?.candidateCode
+                    val candidate = (liveScanState as? OcrScanState.Scanning)?.candidateCode
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -294,11 +364,11 @@ fun InAppScannerScreen(
                         Button(
                             onClick = {
                                 if (!candidate.isNullOrBlank()) {
-                                    scanState = OcrScanState.Locked(
-                                        code = candidate,
-                                        confidence = 0.92f,
-                                        sourceLabel = "التقاط مباشر"
-                                    )
+                                    ocrAnalyzer.lockExternalCode()
+                                    lockedCodeState.value = candidate
+                                    lockedConfidenceState.floatValue = 0.92f
+                                    lockedAlternativesState.value = ArrayList()
+                                    lockedSourceLabelState.value = "التقاط مباشر"
                                 } else {
                                     ocrAnalyzer.requestBurstCapture()
                                 }
@@ -322,10 +392,14 @@ fun InAppScannerScreen(
 
                         FilledTonalButton(
                             onClick = {
-                                galleryPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                )
+                                if (!isAnalyzingGalleryState.value) {
+                                    ocrAnalyzer.pauseForGallery()
+                                    galleryPickerLauncher.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                    )
+                                }
                             },
+                            enabled = !isAnalyzingGalleryState.value,
                             modifier = Modifier
                                 .height(50.dp)
                                 .testTag("inapp_gallery_button")
@@ -376,6 +450,7 @@ fun InAppScannerScreen(
                             onRescan = {
                                 copiedFallbackCode = null
                                 vibratedCode = null
+                                lockedCodeState.value = null
                                 ocrAnalyzer.reset()
                             }
                         )
@@ -424,6 +499,7 @@ fun InAppScannerScreen(
                     },
                     onRescan = {
                         vibratedCode = null
+                        lockedCodeState.value = null
                         ocrAnalyzer.reset()
                     },
                     modifier = Modifier

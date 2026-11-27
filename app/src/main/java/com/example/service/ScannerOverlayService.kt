@@ -269,7 +269,8 @@ fun ScannerOverlayContent(
     val context = LocalContext.current
     var torchEnabled by remember { mutableStateOf(initialTorchEnabled) }
     var boundCamera by remember { mutableStateOf<Camera?>(null) }
-    var scanState by remember { mutableStateOf<OcrScanState>(OcrScanState.Scanning()) }
+    var liveScanState by remember { mutableStateOf<OcrScanState>(OcrScanState.Scanning()) }
+    var lockedState by remember { mutableStateOf<OcrScanState.Locked?>(null) }
     var showAccessibilityFallback by remember { mutableStateOf(false) }
     var vibratedCode by remember { mutableStateOf<String?>(null) }
     var fallbackCode by remember { mutableStateOf<String?>(null) }
@@ -277,7 +278,15 @@ fun ScannerOverlayContent(
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val ocrAnalyzer = remember {
         OcrAnalyzer { newState ->
-            scanState = newState
+            if (lockedState != null) return@OcrAnalyzer
+            when (newState) {
+                is OcrScanState.Locked -> lockedState = newState
+                is OcrScanState.Error -> {
+                    Toast.makeText(context, newState.message, Toast.LENGTH_SHORT).show()
+                    liveScanState = OcrScanState.Scanning()
+                }
+                is OcrScanState.Scanning -> liveScanState = newState
+            }
         }
     }
 
@@ -292,21 +301,17 @@ fun ScannerOverlayContent(
         boundCamera?.cameraControl?.enableTorch(torchEnabled)
     }
 
-    LaunchedEffect(scanState) {
-        val current = scanState
-        if (current is OcrScanState.Locked && vibratedCode != current.code) {
+    LaunchedEffect(lockedState) {
+        val current = lockedState
+        if (current != null && vibratedCode != current.code) {
             vibratedCode = current.code
             if (vibrationEnabled) {
                 PermissionHelper.triggerSuccessVibration(context)
             }
-        } else if (current is OcrScanState.Error) {
-            Toast.makeText(context, current.message, Toast.LENGTH_SHORT).show()
-            ocrAnalyzer.reset()
         }
     }
 
     val detectedNetwork = CardDispatchCoordinator.detectedNetworkName.value
-    val lockedState = scanState as? OcrScanState.Locked
 
     Box(
         modifier = Modifier
@@ -411,27 +416,29 @@ fun ScannerOverlayContent(
                         onRescan = {
                             fallbackCode = null
                             vibratedCode = null
+                            lockedState = null
                             showAccessibilityFallback = false
                             ocrAnalyzer.reset()
                         }
                     )
                 } else if (lockedState != null) {
+                    val activeLocked = lockedState!!
                     ScannedCodeReviewPanel(
-                        initialCode = lockedState.code,
-                        confidence = lockedState.confidence,
-                        alternatives = lockedState.alternatives,
-                        sourceLabel = lockedState.sourceLabel,
+                        initialCode = activeLocked.code,
+                        confidence = activeLocked.confidence,
+                        alternatives = activeLocked.alternatives,
+                        sourceLabel = activeLocked.sourceLabel,
                         onConnectDirect = { finalCode ->
                             val accessibilityReady =
                                 PermissionHelper.isAccessibilityServiceEnabled(context) ||
                                     CardDispatchCoordinator.isAccessibilityConnected.value
                             if (accessibilityReady) {
-                                onCodeLockedAndAutoFillReady(finalCode, lockedState.confidence)
+                                onCodeLockedAndAutoFillReady(finalCode, activeLocked.confidence)
                             } else {
                                 CardDispatchCoordinator.saveScannedCardToHistory(
                                     context = context,
                                     code = finalCode,
-                                    confidence = lockedState.confidence,
+                                    confidence = activeLocked.confidence,
                                     submitted = false
                                 )
                                 CardDispatchCoordinator.openInAppPortal(
@@ -447,12 +454,13 @@ fun ScannerOverlayContent(
                             CardDispatchCoordinator.dispatchScannedCode(
                                 context = context,
                                 code = finalCode,
-                                confidence = lockedState.confidence
+                                confidence = activeLocked.confidence
                             )
                             showAccessibilityFallback = true
                         },
                         onRescan = {
                             vibratedCode = null
+                            lockedState = null
                             ocrAnalyzer.reset()
                         }
                     )
@@ -469,26 +477,27 @@ fun ScannerOverlayContent(
                             cameraExecutor = cameraExecutor,
                             ocrAnalyzer = ocrAnalyzer,
                             torchEnabled = torchEnabled,
-                            scanState = scanState,
+                            scanState = liveScanState,
                             onBoundCameraChanged = { boundCamera = it },
                             modifier = Modifier.fillMaxSize()
                         )
                     }
 
                     // Live OCR Status & Code Display
-                    OcrLiveStatusBanner(scanState = scanState)
+                    OcrLiveStatusBanner(scanState = liveScanState)
 
                     // Bottom Action Buttons
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        val candidate = (scanState as? OcrScanState.Scanning)?.candidateCode
+                        val candidate = (liveScanState as? OcrScanState.Scanning)?.candidateCode
 
                         Button(
                             onClick = {
                                 if (!candidate.isNullOrBlank()) {
-                                    scanState = OcrScanState.Locked(
+                                    ocrAnalyzer.lockExternalCode()
+                                    lockedState = OcrScanState.Locked(
                                         code = candidate,
                                         confidence = 0.92f,
                                         sourceLabel = "التقاط مباشر"

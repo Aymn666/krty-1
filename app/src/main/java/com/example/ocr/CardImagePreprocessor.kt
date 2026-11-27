@@ -44,7 +44,7 @@ object CardImagePreprocessor {
         roiTopFrac: Float = 0.22f,
         roiRightFrac: Float = 0.92f,
         roiBottomFrac: Float = 0.78f,
-        maxTargetWidth: Int = 820
+        maxTargetWidth: Int = 800
     ): GrayscalePatch? {
         val plane = imageProxy.planes.firstOrNull() ?: return null
         val srcW = imageProxy.width
@@ -299,8 +299,33 @@ object CardImagePreprocessor {
         return GrayscalePatch(luma = luma, width = w, height = h, avgLuma = avg)
     }
 
-    fun decodeOrientedGalleryBitmap(context: Context, uri: Uri, maxDim: Int = 1600): Bitmap? {
-        return runCatching {
+    /**
+     * Resizes any bitmap via Android Canvas so its width never exceeds [maxWidth] (default 800px),
+     * ensuring sub-second OCR latency on both camera captures and high-res gallery photos.
+     */
+    fun resizeToMaxWidthViaCanvas(bitmap: Bitmap, maxWidth: Int = 800): Bitmap {
+        if (maxWidth <= 0 || bitmap.width <= maxWidth || bitmap.width <= 0 || bitmap.height <= 0) {
+            return bitmap
+        }
+        val scale = maxWidth.toFloat() / bitmap.width.toFloat()
+        val targetW = maxWidth
+        val targetH = (bitmap.height * scale).roundToInt().coerceAtLeast(1)
+        val output = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(output)
+        val paint = android.graphics.Paint(
+            android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.FILTER_BITMAP_FLAG
+        )
+        canvas.drawBitmap(
+            bitmap,
+            android.graphics.Rect(0, 0, bitmap.width, bitmap.height),
+            android.graphics.Rect(0, 0, targetW, targetH),
+            paint
+        )
+        return output
+    }
+
+    fun decodeOrientedGalleryBitmap(context: Context, uri: Uri, maxDim: Int = 800): Bitmap? {
+        val decoded = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 val source = ImageDecoder.createSource(context.contentResolver, uri)
                 ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
@@ -319,7 +344,13 @@ object CardImagePreprocessor {
             } else {
                 decodeLegacyOrientedBitmap(context, uri, maxDim)
             }
-        }.getOrNull()
+        }.getOrNull() ?: return null
+
+        val canvasScaled = resizeToMaxWidthViaCanvas(decoded, maxWidth = maxDim)
+        if (canvasScaled !== decoded) {
+            decoded.recycle()
+        }
+        return canvasScaled
     }
 
     private fun decodeLegacyOrientedBitmap(context: Context, uri: Uri, maxDim: Int): Bitmap? {
@@ -381,21 +412,29 @@ object CardImagePreprocessor {
     }
 
     /**
-     * Fast stage-1 gallery passes (center contrast+sharpen + full raw) for instant recognition on clear photos.
+     * Fast stage-1 gallery passes (center contrast+sharpen + full Canvas-resized 800px raw)
+     * for sub-second recognition on clear cards.
      */
     fun buildFastGalleryPasses(source: Bitmap): List<GalleryPassBitmap> {
-        val centerBitmap = extractCenterCropBitmap(source)
+        val normalized = resizeToMaxWidthViaCanvas(source, maxWidth = 800)
+        val centerBitmap = extractCenterCropBitmap(normalized)
         val centerPatch = bitmapToGrayPatch(centerBitmap)
-        if (centerBitmap !== source) centerBitmap.recycle()
+        if (centerBitmap !== normalized) centerBitmap.recycle()
+
+        val fullCopy = if (normalized !== source) {
+            normalized
+        } else {
+            normalized.copy(Bitmap.Config.ARGB_8888, false)
+        }
 
         return listOf(
             GalleryPassBitmap(
-                bitmap = toContrastSharpenedBitmap(centerPatch, minTargetWidth = 1000),
+                bitmap = toContrastSharpenedBitmap(centerPatch, minTargetWidth = 720),
                 isCenterCrop = true,
                 label = "center_contrast"
             ),
             GalleryPassBitmap(
-                bitmap = upscaleIfNeeded(source, minWidth = 1000, copyIfUnchanged = true),
+                bitmap = fullCopy,
                 isCenterCrop = false,
                 label = "full_raw"
             )
@@ -403,31 +442,34 @@ object CardImagePreprocessor {
     }
 
     /**
-     * Deep stage-2 gallery passes for faint, distant, shadowed, or cluttered photos.
+     * Deep stage-2 gallery passes for faint, scratched, shadowed, or cluttered photos,
+     * capped at 800px width for fast ML Kit inference.
      */
     fun buildDeepGalleryPasses(source: Bitmap): List<GalleryPassBitmap> {
-        val fullPatch = bitmapToGrayPatch(source)
-        val centerBitmap = extractCenterCropBitmap(source)
+        val normalized = resizeToMaxWidthViaCanvas(source, maxWidth = 800)
+        val fullPatch = bitmapToGrayPatch(normalized)
+        val centerBitmap = extractCenterCropBitmap(normalized)
         val centerPatch = bitmapToGrayPatch(centerBitmap)
+        if (normalized !== source) normalized.recycle()
 
         return listOf(
             GalleryPassBitmap(
-                bitmap = upscaleIfNeeded(centerBitmap, minWidth = 1100, copyIfUnchanged = false),
+                bitmap = upscaleIfNeeded(centerBitmap, minWidth = 720, copyIfUnchanged = false, maxWidth = 800),
                 isCenterCrop = true,
                 label = "center_raw"
             ),
             GalleryPassBitmap(
-                bitmap = toContrastSharpenedBitmap(fullPatch, minTargetWidth = 1000),
+                bitmap = toContrastSharpenedBitmap(fullPatch, minTargetWidth = 720),
                 isCenterCrop = false,
                 label = "full_contrast"
             ),
             GalleryPassBitmap(
-                bitmap = toAdaptiveThresholdBitmap(fullPatch, minTargetWidth = 1000),
+                bitmap = toAdaptiveThresholdBitmap(fullPatch, minTargetWidth = 720),
                 isCenterCrop = false,
                 label = "full_adaptive"
             ),
             GalleryPassBitmap(
-                bitmap = toAdaptiveThresholdBitmap(centerPatch, minTargetWidth = 1100),
+                bitmap = toAdaptiveThresholdBitmap(centerPatch, minTargetWidth = 760),
                 isCenterCrop = true,
                 label = "center_adaptive"
             )
@@ -442,19 +484,21 @@ object CardImagePreprocessor {
     }
 
     private fun extractCenterCropBitmap(source: Bitmap): Bitmap {
-        val cropLeft = (source.width * 0.14f).toInt().coerceIn(0, max(0, source.width - 2))
-        val cropTop = (source.height * 0.18f).toInt().coerceIn(0, max(0, source.height - 2))
-        val cropW = (source.width * 0.72f).toInt().coerceIn(2, source.width - cropLeft)
-        val cropH = (source.height * 0.64f).toInt().coerceIn(2, source.height - cropTop)
+        val cropLeft = (source.width * 0.10f).toInt().coerceIn(0, max(0, source.width - 2))
+        val cropTop = (source.height * 0.16f).toInt().coerceIn(0, max(0, source.height - 2))
+        val cropW = (source.width * 0.80f).toInt().coerceIn(2, source.width - cropLeft)
+        val cropH = (source.height * 0.68f).toInt().coerceIn(2, source.height - cropTop)
         return Bitmap.createBitmap(source, cropLeft, cropTop, cropW, cropH)
     }
 
     fun buildRotatedContrastPass(source: Bitmap, degrees: Float): Bitmap {
         val matrix = Matrix().apply { postRotate(degrees) }
         val rotated = Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
-        val patch = bitmapToGrayPatch(rotated)
-        if (rotated !== source) rotated.recycle()
-        return toContrastSharpenedBitmap(patch, minTargetWidth = 1000)
+        val capped = resizeToMaxWidthViaCanvas(rotated, maxWidth = 800)
+        if (capped !== rotated) rotated.recycle()
+        val patch = bitmapToGrayPatch(capped)
+        if (capped !== source) capped.recycle()
+        return toContrastSharpenedBitmap(patch, minTargetWidth = 720)
     }
 
     private fun lumaToUpscaledBitmap(
@@ -469,11 +513,16 @@ object CardImagePreprocessor {
             argb[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
         }
         val raw = Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888)
+        val effectiveMax = max(800, minTargetWidth)
         return if (width < minTargetWidth && width > 0) {
             val scale = (minTargetWidth.toFloat() / width.toFloat()).coerceAtMost(2.5f)
-            val newW = (width * scale).roundToInt().coerceAtLeast(width)
+            val newW = (width * scale).roundToInt().coerceAtLeast(width).coerceAtMost(effectiveMax)
             val newH = (height * scale).roundToInt().coerceAtLeast(height)
             Bitmap.createScaledBitmap(raw, newW, newH, true).also {
+                if (it !== raw) raw.recycle()
+            }
+        } else if (width > effectiveMax) {
+            resizeToMaxWidthViaCanvas(raw, maxWidth = effectiveMax).also {
                 if (it !== raw) raw.recycle()
             }
         } else {
@@ -484,13 +533,19 @@ object CardImagePreprocessor {
     private fun upscaleIfNeeded(
         bitmap: Bitmap,
         minWidth: Int,
-        copyIfUnchanged: Boolean
+        copyIfUnchanged: Boolean,
+        maxWidth: Int = 800
     ): Bitmap {
+        val effectiveMax = max(maxWidth, minWidth)
         return if (bitmap.width < minWidth && bitmap.width > 0) {
             val scale = (minWidth.toFloat() / bitmap.width.toFloat()).coerceAtMost(2.5f)
-            val newW = (bitmap.width * scale).roundToInt().coerceAtLeast(bitmap.width)
+            val newW = (bitmap.width * scale).roundToInt().coerceAtLeast(bitmap.width).coerceAtMost(effectiveMax)
             val newH = (bitmap.height * scale).roundToInt().coerceAtLeast(bitmap.height)
             Bitmap.createScaledBitmap(bitmap, newW, newH, true).also {
+                if (!copyIfUnchanged && it !== bitmap) bitmap.recycle()
+            }
+        } else if (bitmap.width > effectiveMax) {
+            resizeToMaxWidthViaCanvas(bitmap, maxWidth = effectiveMax).also {
                 if (!copyIfUnchanged && it !== bitmap) bitmap.recycle()
             }
         } else if (copyIfUnchanged) {

@@ -302,7 +302,7 @@ fun ScannedCodeReviewPanel(
     onRescan: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var editedCode by remember(initialCode) { mutableStateOf(initialCode) }
+    var editedCode by androidx.compose.runtime.saveable.rememberSaveable(initialCode) { mutableStateOf(initialCode) }
     val trimmedCode = editedCode.trim()
     val confidencePct = (confidence.coerceIn(0f, 1f) * 100f).roundToInt()
 
