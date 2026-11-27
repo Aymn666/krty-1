@@ -329,15 +329,52 @@ object WifiPortalHelper {
                         'status', 'uptime', 'time left', 'bytes', 'remaining', 'logout', 'welcome'
                     ];
                     var errorWords = [
-                        'غير صحيح', 'خاطئ', 'خطأ', 'منتهي', 'تم استخدام', 'invalid', 'expired', 'wrong', 'failed'
+                        'غير صحيح', 'خاطئ', 'خطأ', 'منتهي', 'انتهى', 'انتهت', 'نفاد', 'نفذ',
+                        'لا يوجد رصيد', 'مستنفد', 'مستخدم', 'تم استخدام', 'محظور', 'موقوف', 'معطل',
+                        'invalid', 'expired', 'wrong', 'failed', 'no more', 'limit', 'credit',
+                        'already', 'disabled', 'not found', 'simultaneous'
                     ];
                     var hasBalanceKeywords = balanceWords.some(function(w) { return bodyText.indexOf(w) !== -1; });
                     var hasErrorKeywords = errorWords.some(function(w) { return bodyText.indexOf(w) !== -1; });
+                    var errorMessage = '';
+                    if (hasErrorKeywords) {
+                        var errSelectors = [
+                            '.error', '.alert-danger', '.alert-error', '.alert', '#error', '#err',
+                            '[class*="error"]', '[class*="err"]', 'font[color="red"]', 'p', 'div', 'span'
+                        ];
+                        for (var s = 0; s < errSelectors.length && !errorMessage; s++) {
+                            var nodes = document.querySelectorAll(errSelectors[s]);
+                            for (var n = 0; n < nodes.length; n++) {
+                                var txt = (nodes[n].innerText || '').replace(/\s+/g, ' ').trim();
+                                if (txt.length >= 4 && txt.length <= 120) {
+                                    var low = txt.toLowerCase();
+                                    if (errorWords.some(function(w) { return low.indexOf(w) !== -1; })) {
+                                        errorMessage = txt;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (!errorMessage && document.body && document.body.innerText) {
+                            var lines = document.body.innerText.split(/\n+/);
+                            for (var l = 0; l < lines.length; l++) {
+                                var ln = lines[l].replace(/\s+/g, ' ').trim();
+                                if (ln.length >= 4 && ln.length <= 120) {
+                                    var lowLn = ln.toLowerCase();
+                                    if (errorWords.some(function(w) { return lowLn.indexOf(w) !== -1; })) {
+                                        errorMessage = ln;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     return JSON.stringify({
                         hasLoginInput: hasLoginInput,
                         hasBalanceKeywords: hasBalanceKeywords,
                         hasErrorKeywords: hasErrorKeywords,
+                        errorMessage: errorMessage,
                         url: url
                     });
                 } catch (e) {
@@ -345,6 +382,7 @@ object WifiPortalHelper {
                         hasLoginInput: true,
                         hasBalanceKeywords: false,
                         hasErrorKeywords: false,
+                        errorMessage: '',
                         url: ''
                     });
                 }

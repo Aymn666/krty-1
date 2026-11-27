@@ -12,9 +12,12 @@ import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -23,6 +26,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,19 +35,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -53,6 +63,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -61,6 +72,10 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.style.TextOverflow
+import com.example.service.SilentLoginState
+import com.example.ui.theme.AmberWarning
+import com.example.ui.theme.CoralError
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -297,6 +312,7 @@ fun ScannedCodeReviewPanel(
     alternatives: List<String>,
     sourceLabel: String,
     rescanLabel: String = "إعادة المسح",
+    onSilentLogin: ((String) -> Unit)? = null,
     onConnectDirect: (String) -> Unit,
     onCopyOnly: (String) -> Unit,
     onRescan: () -> Unit,
@@ -485,68 +501,102 @@ fun ScannedCodeReviewPanel(
                 }
             }
 
-            // Primary Direct Connect CTA
-            Button(
-                onClick = {
-                    if (trimmedCode.length >= 4) {
-                        onConnectDirect(trimmedCode)
-                    }
-                },
-                enabled = trimmedCode.length >= 4,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .testTag("review_connect_button"),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = EmeraldPrimary,
-                    contentColor = MidnightBg
-                )
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Wifi,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "اتصال مباشر",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-            }
-
-            // Secondary Row: Copy & Rescan
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                FilledTonalButton(
+            if (onSilentLogin != null) {
+                // Option 1: Silent Login in background (Primary CTA)
+                Button(
                     onClick = {
-                        if (trimmedCode.isNotEmpty()) {
-                            onCopyOnly(trimmedCode)
+                        if (trimmedCode.length >= 4) {
+                            onSilentLogin(trimmedCode)
                         }
                     },
-                    enabled = trimmedCode.isNotEmpty(),
+                    enabled = trimmedCode.length >= 4,
                     modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("review_copy_button"),
-                    shape = RoundedCornerShape(14.dp)
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("review_silent_login_button"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = EmeraldPrimary,
+                        contentColor = MidnightBg
+                    )
                 ) {
                     Icon(
-                        imageVector = Icons.Default.ContentCopy,
+                        imageVector = Icons.Default.Bolt,
                         contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("نسخ فقط", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = "دخول صامت ⚡",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
+
+                // Option 2 & 3: Login & Preview + Copy
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = {
+                            if (trimmedCode.length >= 4) {
+                                onConnectDirect(trimmedCode)
+                            }
+                        },
+                        enabled = trimmedCode.length >= 4,
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .height(48.dp)
+                            .testTag("review_connect_button"),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Visibility,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = CyanSecondary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "دخول ومعاينة 👁️",
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    FilledTonalButton(
+                        onClick = {
+                            if (trimmedCode.isNotEmpty()) {
+                                onCopyOnly(trimmedCode)
+                            }
+                        },
+                        enabled = trimmedCode.isNotEmpty(),
+                        modifier = Modifier
+                            .weight(0.8f)
+                            .height(48.dp)
+                            .testTag("review_copy_button"),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "نسخ 📋",
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
                 }
 
                 OutlinedButton(
                     onClick = onRescan,
                     modifier = Modifier
-                        .weight(1f)
+                        .fillMaxWidth()
                         .height(48.dp)
                         .testTag("review_rescan_button"),
                     shape = RoundedCornerShape(14.dp)
@@ -559,7 +609,276 @@ fun ScannedCodeReviewPanel(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(rescanLabel, fontWeight = FontWeight.SemiBold)
                 }
+            } else {
+                // Primary Direct Connect CTA
+                Button(
+                    onClick = {
+                        if (trimmedCode.length >= 4) {
+                            onConnectDirect(trimmedCode)
+                        }
+                    },
+                    enabled = trimmedCode.length >= 4,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("review_connect_button"),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = EmeraldPrimary,
+                        contentColor = MidnightBg
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Wifi,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "اتصال مباشر",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
+
+                // Secondary Row: Copy & Rescan
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = {
+                            if (trimmedCode.isNotEmpty()) {
+                                onCopyOnly(trimmedCode)
+                            }
+                        },
+                        enabled = trimmedCode.isNotEmpty(),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("review_copy_button"),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("نسخ فقط", fontWeight = FontWeight.SemiBold)
+                    }
+
+                    OutlinedButton(
+                        onClick = onRescan,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp)
+                            .testTag("review_rescan_button"),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(rescanLabel, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
     }
 }
+
+/**
+ * Animated floating Status Pill displaying live silent portal login progress,
+ * internet connection confirmation, or exact portal error feedback.
+ */
+@Composable
+fun SilentLoginStatusPill(
+    state: SilentLoginState,
+    onOpenPortal: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (state is SilentLoginState.Idle) return
+
+    val borderColor by animateColorAsState(
+        targetValue = when (state) {
+            is SilentLoginState.Connecting -> CyanSecondary.copy(alpha = 0.75f)
+            is SilentLoginState.Success -> EmeraldPrimary.copy(alpha = 0.90f)
+            is SilentLoginState.Error -> CoralError.copy(alpha = 0.85f)
+            is SilentLoginState.Idle -> Color.Transparent
+        },
+        label = "silentPillBorder"
+    )
+
+    val containerColor by animateColorAsState(
+        targetValue = when (state) {
+            is SilentLoginState.Connecting -> DeepNavySurface
+            is SilentLoginState.Success -> DeepNavySurface
+            is SilentLoginState.Error -> DeepNavySurface
+            is SilentLoginState.Idle -> DeepNavySurface
+        },
+        label = "silentPillBg"
+    )
+
+    Surface(
+        modifier = modifier
+            .widthIn(min = 240.dp, max = 380.dp)
+            .border(1.5.dp, borderColor, RoundedCornerShape(28.dp))
+            .testTag("silent_login_status_pill"),
+        shape = RoundedCornerShape(28.dp),
+        color = containerColor,
+        shadowElevation = 12.dp,
+        tonalElevation = 10.dp
+    ) {
+        AnimatedContent(
+            targetState = state,
+            transitionSpec = { fadeIn() togetherWith fadeOut() },
+            label = "silentPillContent"
+        ) { current ->
+            when (current) {
+                is SilentLoginState.Connecting -> {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = CyanSecondary,
+                            strokeWidth = 2.5.dp
+                        )
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
+                            Text(
+                                text = "⏳ جاري تسجيل الدخول صامتاً...",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = buildString {
+                                    append(current.code)
+                                    if (current.networkName.isNotBlank()) {
+                                        append(" • ")
+                                        append(current.networkName)
+                                    }
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = CyanSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                is SilentLoginState.Success -> {
+                    Row(
+                        modifier = Modifier
+                            .clickable { onDismiss() }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = EmeraldPrimary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
+                            Text(
+                                text = "✅ تم الاتصال بالإنترنت بنجاح!",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = EmeraldPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "الكود: ${current.code}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.85f),
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+
+                is SilentLoginState.Error -> {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.WarningAmber,
+                                contentDescription = "تنبيه خطأ البوابة",
+                                tint = AmberWarning,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = current.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            IconButton(
+                                onClick = onDismiss,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("silent_pill_close")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "إغلاق",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(
+                                onClick = onOpenPortal,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                modifier = Modifier.testTag("silent_pill_open_portal")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Visibility,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = CyanSecondary
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "فتح البوابة للمعاينة",
+                                    color = CyanSecondary,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                is SilentLoginState.Idle -> Unit
+            }
+        }
+    }
+}
+

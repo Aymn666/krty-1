@@ -12,6 +12,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -20,6 +26,11 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.ui.Alignment
+import com.example.service.CardDispatchCoordinator
+import com.example.service.ScannerLaunchMode
+import com.example.service.SilentLoginState
+import com.example.ui.components.SilentLoginStatusPill
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
@@ -89,6 +100,8 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
     private var openScannerTrigger by mutableIntStateOf(0)
+    private var launchScannerMode by mutableStateOf(ScannerLaunchMode.REVIEW)
+    private var launchedFromWidget by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -96,16 +109,24 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(MidnightBg.toArgb()),
             navigationBarStyle = SystemBarStyle.dark(DeepNavySurface.toArgb())
         )
-        if (intent?.getBooleanExtra(EXTRA_OPEN_IN_APP_SCANNER, false) == true) {
-            openScannerTrigger++
-            intent.removeExtra(EXTRA_OPEN_IN_APP_SCANNER)
-        }
+        consumeScannerExtras(intent)
 
         setContent {
             KartiTheme {
                 KartiAppRoot(
                     viewModel = viewModel,
-                    openScannerTrigger = openScannerTrigger
+                    openScannerTrigger = openScannerTrigger,
+                    launchScannerMode = launchScannerMode,
+                    launchedFromWidget = launchedFromWidget,
+                    onResetScannerLaunchMode = {
+                        launchScannerMode = ScannerLaunchMode.REVIEW
+                        launchedFromWidget = false
+                    },
+                    onMoveToBackgroundIfWidget = {
+                        if (launchedFromWidget && PermissionHelper.isOverlayGranted(this)) {
+                            moveTaskToBack(true)
+                        }
+                    }
                 )
             }
         }
@@ -114,14 +135,27 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.getBooleanExtra(EXTRA_OPEN_IN_APP_SCANNER, false)) {
+        consumeScannerExtras(intent)
+    }
+
+    private fun consumeScannerExtras(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_IN_APP_SCANNER, false) == true) {
+            val modeName = intent.getStringExtra(EXTRA_SCANNER_MODE)
+            launchScannerMode = runCatching {
+                if (modeName.isNullOrBlank()) ScannerLaunchMode.REVIEW else ScannerLaunchMode.valueOf(modeName)
+            }.getOrDefault(ScannerLaunchMode.REVIEW)
+            launchedFromWidget = intent.getBooleanExtra(EXTRA_FROM_WIDGET, false)
             openScannerTrigger++
             intent.removeExtra(EXTRA_OPEN_IN_APP_SCANNER)
+            intent.removeExtra(EXTRA_SCANNER_MODE)
+            intent.removeExtra(EXTRA_FROM_WIDGET)
         }
     }
 
     companion object {
         const val EXTRA_OPEN_IN_APP_SCANNER = "extra_open_in_app_scanner"
+        const val EXTRA_SCANNER_MODE = "extra_scanner_mode"
+        const val EXTRA_FROM_WIDGET = "extra_from_widget"
     }
 }
 
@@ -129,10 +163,15 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun KartiAppRoot(
     viewModel: MainViewModel,
-    openScannerTrigger: Int
+    openScannerTrigger: Int,
+    launchScannerMode: ScannerLaunchMode = ScannerLaunchMode.REVIEW,
+    launchedFromWidget: Boolean = false,
+    onResetScannerLaunchMode: () -> Unit = {},
+    onMoveToBackgroundIfWidget: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val silentLoginState by CardDispatchCoordinator.silentLoginState.collectAsStateWithLifecycle()
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route ?: ROUTE_HOME
@@ -329,6 +368,7 @@ fun KartiAppRoot(
                                 PermissionHelper.openAccessibilitySettings(context)
                             },
                             onOpenInAppScanner = {
+                                onResetScannerLaunchMode()
                                 navController.navigate(ROUTE_SCANNER)
                             },
                             onOpenPortalWithScanner = {
@@ -337,6 +377,7 @@ fun KartiAppRoot(
                             onStartOverlayScanner = {
                                 val launched = viewModel.launchScannerOverlay()
                                 if (!launched) {
+                                    onResetScannerLaunchMode()
                                     navController.navigate(ROUTE_SCANNER)
                                 }
                             },
@@ -383,11 +424,57 @@ fun KartiAppRoot(
                         InAppScannerScreen(
                             initialFlashEnabled = uiState.settings.autoFlashEnabled,
                             vibrationEnabled = uiState.settings.vibrationEnabled,
-                            onClose = { navController.popBackStack() }
+                            scanMode = launchScannerMode,
+                            onSilentSubmitted = {
+                                val wasFromWidget = launchedFromWidget
+                                navController.popBackStack()
+                                onMoveToBackgroundIfWidget()
+                                onResetScannerLaunchMode()
+                                if (wasFromWidget && !PermissionHelper.isOverlayGranted(context)) {
+                                    // Keep app visible so the in-app Status Pill shows progress
+                                }
+                            },
+                            onClose = {
+                                onResetScannerLaunchMode()
+                                navController.popBackStack()
+                            }
                         )
                     }
                 }
             }
+        }
+
+        // In-app fallback Status Pill when system overlay permission is not granted
+        AnimatedVisibility(
+            visible = silentLoginState !is SilentLoginState.Idle && !uiState.permissions.overlayGranted,
+            enter = slideInVertically { -it } + fadeIn(),
+            exit = slideOutVertically { -it } + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+        ) {
+            SilentLoginStatusPill(
+                state = silentLoginState,
+                onOpenPortal = {
+                    val code = when (val s = silentLoginState) {
+                        is SilentLoginState.Error -> s.code
+                        is SilentLoginState.Connecting -> s.code
+                        is SilentLoginState.Success -> s.code
+                        is SilentLoginState.Idle -> null
+                    }
+                    CardDispatchCoordinator.clearSilentLoginState()
+                    CardDispatchCoordinator.openInAppPortal(
+                        context = context,
+                        autoStartScanner = false,
+                        prefillCode = code,
+                        forceAutoClick = true
+                    )
+                },
+                onDismiss = {
+                    CardDispatchCoordinator.clearSilentLoginState()
+                }
+            )
         }
     }
 }

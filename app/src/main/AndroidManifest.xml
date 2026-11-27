@@ -95,6 +95,15 @@
             android:exported="false"
             android:foregroundServiceType="camera" />
 
+        <service
+            android:name=".service.SilentPortalLoginService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Background silent captive portal login using WebView with floating status pill" />
+        </service>
+
         <receiver
             android:name=".widget.KartiScanWidgetProvider"
             android:exported="true"

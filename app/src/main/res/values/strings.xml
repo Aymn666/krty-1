@@ -19,5 +19,8 @@
     <string name="widget_scan_subtitle">اختصار المسح الفوري</string>
     <string name="widget_scan_action">مسح كرت</string>
     <string name="widget_portal_action">فتح البوابة مع الماسح</string>
-    <string name="widget_scan_desc">اختصار مباشر من الشاشة الرئيسية لفتح الماسح الذكي وقراءة كرت الواي فاي فوراً</string>
+    <string name="widget_silent_scan_action">مسح صامت ⚡</string>
+    <string name="widget_preview_scan_action">مسح ومعاينة 👁️</string>
+    <string name="silent_login_notif_title">تسجيل الدخول الصامت</string>
+    <string name="widget_scan_desc">اختصار مباشر من الشاشة الرئيسية للمسح الصامت أو المسح مع معاينة بوابة الواي فاي فوراً</string>
 </resources>

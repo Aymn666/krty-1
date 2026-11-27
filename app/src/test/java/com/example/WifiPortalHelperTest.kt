@@ -35,4 +35,16 @@ class WifiPortalHelperTest {
         assertTrue(script.contains("دخول للإنترنت"))
         assertTrue(script.contains("تسجيل الدخول"))
     }
+
+    @Test
+    fun buildsBalanceCheckScriptWithErrorMessageExtraction() {
+        val script = WifiPortalHelper.buildBalancePageCheckScript()
+        assertTrue(script.contains("hasLoginInput"))
+        assertTrue(script.contains("hasBalanceKeywords"))
+        assertTrue(script.contains("hasErrorKeywords"))
+        assertTrue(script.contains("errorMessage"))
+        assertTrue(script.contains("لا يوجد رصيد"))
+        assertTrue(script.contains("نفاد"))
+        assertTrue(script.contains("credit"))
+    }
 }

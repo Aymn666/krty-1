@@ -197,22 +197,24 @@ class ScannerOverlayService :
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
             setContent {
                 KartiTheme {
-                    ScannerOverlayContent(
-                        initialTorchEnabled = initialTorch,
-                        vibrationEnabled = vibrationEnabled,
-                        lifecycleOwner = this@ScannerOverlayService,
-                        onClose = { closeOverlayImmediately() },
-                        onCodeLockedAndAutoFillReady = { code, confidence ->
-                            mainHandler.postDelayed({
-                                closeOverlayImmediately()
-                                CardDispatchCoordinator.dispatchScannedCode(
-                                    context = this@ScannerOverlayService,
-                                    code = code,
-                                    confidence = confidence
-                                )
-                            }, 350L)
-                        }
-                    )
+                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                        ScannerOverlayContent(
+                            initialTorchEnabled = initialTorch,
+                            vibrationEnabled = vibrationEnabled,
+                            lifecycleOwner = this@ScannerOverlayService,
+                            onClose = { closeOverlayImmediately() },
+                            onCodeLockedAndAutoFillReady = { code, confidence ->
+                                mainHandler.postDelayed({
+                                    closeOverlayImmediately()
+                                    CardDispatchCoordinator.dispatchScannedCode(
+                                        context = this@ScannerOverlayService,
+                                        code = code,
+                                        confidence = confidence
+                                    )
+                                }, 350L)
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -428,35 +430,41 @@ fun ScannerOverlayContent(
                         confidence = activeLocked.confidence,
                         alternatives = activeLocked.alternatives,
                         sourceLabel = activeLocked.sourceLabel,
-                        onConnectDirect = { finalCode ->
-                            val accessibilityReady =
-                                PermissionHelper.isAccessibilityServiceEnabled(context) ||
-                                    CardDispatchCoordinator.isAccessibilityConnected.value
-                            if (accessibilityReady) {
-                                onCodeLockedAndAutoFillReady(finalCode, activeLocked.confidence)
-                            } else {
-                                CardDispatchCoordinator.saveScannedCardToHistory(
-                                    context = context,
-                                    code = finalCode,
-                                    confidence = activeLocked.confidence,
-                                    submitted = false
-                                )
-                                CardDispatchCoordinator.openInAppPortal(
-                                    context = context,
-                                    autoStartScanner = false,
-                                    prefillCode = finalCode
-                                )
-                                onClose()
-                            }
-                        },
-                        onCopyOnly = { finalCode ->
-                            fallbackCode = finalCode
-                            CardDispatchCoordinator.dispatchScannedCode(
+                        onSilentLogin = { finalCode ->
+                            CardDispatchCoordinator.startSilentLogin(
                                 context = context,
                                 code = finalCode,
                                 confidence = activeLocked.confidence
                             )
-                            showAccessibilityFallback = true
+                            onClose()
+                        },
+                        onConnectDirect = { finalCode ->
+                            CardDispatchCoordinator.saveScannedCardToHistory(
+                                context = context,
+                                code = finalCode,
+                                confidence = activeLocked.confidence,
+                                submitted = false
+                            )
+                            CardDispatchCoordinator.openInAppPortal(
+                                context = context,
+                                autoStartScanner = false,
+                                prefillCode = finalCode,
+                                forceAutoClick = true
+                            )
+                            onClose()
+                        },
+                        onCopyOnly = { finalCode ->
+                            CardDispatchCoordinator.saveScannedCardToHistory(
+                                context = context,
+                                code = finalCode,
+                                confidence = activeLocked.confidence,
+                                submitted = false
+                            )
+                            CardDispatchCoordinator.copyToClipboard(
+                                context = context,
+                                code = finalCode,
+                                showToast = true
+                            )
                         },
                         onRescan = {
                             vibratedCode = null

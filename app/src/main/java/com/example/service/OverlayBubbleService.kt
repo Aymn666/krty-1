@@ -20,6 +20,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import com.example.KartiApplication
 import com.example.MainActivity
 import com.example.R
@@ -29,6 +30,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -70,8 +72,13 @@ class OverlayBubbleService : Service() {
 
     private fun observePortalVisibility() {
         serviceScope.launch {
-            CardDispatchCoordinator.isPortalBrowserOpen.collectLatest { isPortalOpen ->
-                bubbleRoot?.visibility = if (isPortalOpen) View.GONE else View.VISIBLE
+            combine(
+                CardDispatchCoordinator.isPortalBrowserOpen,
+                CardDispatchCoordinator.isScannerOverlayRunning
+            ) { isPortalOpen, isScannerOpen ->
+                isPortalOpen || isScannerOpen
+            }.collectLatest { shouldHide ->
+                bubbleRoot?.visibility = if (shouldHide) View.GONE else View.VISIBLE
             }
         }
     }
@@ -237,7 +244,14 @@ class OverlayBubbleService : Service() {
 
         bubbleRoot = root
         layoutParams = params
-        root.visibility = if (CardDispatchCoordinator.isPortalBrowserOpen.value) View.GONE else View.VISIBLE
+        root.visibility = if (
+            CardDispatchCoordinator.isPortalBrowserOpen.value ||
+            CardDispatchCoordinator.isScannerOverlayRunning.value
+        ) {
+            View.GONE
+        } else {
+            View.VISIBLE
+        }
         runCatching { windowManager?.addView(root, params) }
     }
 
@@ -251,10 +265,22 @@ class OverlayBubbleService : Service() {
     }
 
     private fun onBubbleTapped() {
-        CardDispatchCoordinator.openInAppPortal(
-            context = this,
-            autoStartScanner = true
-        )
+        if (PermissionHelper.isCameraGranted(this) && PermissionHelper.isOverlayGranted(this)) {
+            val scannerIntent = Intent(this, ScannerOverlayService::class.java)
+            runCatching {
+                ContextCompat.startForegroundService(this, scannerIntent)
+            }.onFailure {
+                CardDispatchCoordinator.openInAppPortal(
+                    context = this,
+                    autoStartScanner = true
+                )
+            }
+        } else {
+            CardDispatchCoordinator.openInAppPortal(
+                context = this,
+                autoStartScanner = true
+            )
+        }
     }
 
     override fun onDestroy() {

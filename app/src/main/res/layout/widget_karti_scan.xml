@@ -7,81 +7,79 @@
     android:gravity="center_vertical"
     android:layoutDirection="rtl"
     android:orientation="horizontal"
-    android:paddingStart="12dp"
-    android:paddingTop="10dp"
-    android:paddingEnd="12dp"
-    android:paddingBottom="10dp">
+    android:paddingStart="10dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="10dp"
+    android:paddingBottom="8dp">
 
     <ImageView
-        android:layout_width="36dp"
-        android:layout_height="36dp"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
         android:contentDescription="@string/app_name"
         android:src="@mipmap/ic_launcher_round" />
 
     <LinearLayout
+        android:id="@+id/widget_silent_scan_button"
         android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="10dp"
-        android:layout_marginEnd="8dp"
-        android:layout_weight="1"
-        android:orientation="vertical">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:text="@string/app_name"
-            android:textColor="#EAF2FA"
-            android:textSize="15sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:text="@string/widget_scan_subtitle"
-            android:textColor="#9FB3C8"
-            android:textSize="11sp" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:id="@+id/widget_scan_button"
-        android:layout_width="wrap_content"
         android:layout_height="48dp"
+        android:layout_marginStart="8dp"
+        android:layout_weight="1"
         android:background="@drawable/widget_scan_pill_bg"
         android:clickable="true"
         android:focusable="true"
         android:gravity="center"
         android:orientation="horizontal"
-        android:paddingStart="14dp"
-        android:paddingEnd="14dp">
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp">
 
         <ImageView
-            android:layout_width="20dp"
-            android:layout_height="20dp"
-            android:contentDescription="@string/widget_scan_action"
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:contentDescription="@string/widget_silent_scan_action"
             android:src="@drawable/ic_widget_qr_scan" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="6dp"
-            android:text="@string/widget_scan_action"
+            android:layout_marginStart="5dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/widget_silent_scan_action"
             android:textColor="#07111E"
-            android:textSize="13sp"
+            android:textSize="12.5sp"
             android:textStyle="bold" />
     </LinearLayout>
 
-    <ImageButton
-        android:id="@+id/widget_portal_button"
-        android:layout_width="48dp"
+    <LinearLayout
+        android:id="@+id/widget_preview_scan_button"
+        android:layout_width="0dp"
         android:layout_height="48dp"
         android:layout_marginStart="8dp"
+        android:layout_weight="1"
         android:background="@drawable/widget_portal_pill_bg"
-        android:contentDescription="@string/widget_portal_action"
-        android:scaleType="center"
-        android:src="@drawable/ic_widget_wifi" />
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp">
+
+        <ImageView
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:contentDescription="@string/widget_preview_scan_action"
+            android:src="@drawable/ic_widget_wifi" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="5dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/widget_preview_scan_action"
+            android:textColor="#EAF2FA"
+            android:textSize="12.5sp"
+            android:textStyle="bold" />
+    </LinearLayout>
 
 </LinearLayout>

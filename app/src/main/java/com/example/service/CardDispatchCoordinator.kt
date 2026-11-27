@@ -18,6 +18,21 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+import androidx.core.content.ContextCompat
+
+enum class ScannerLaunchMode {
+    REVIEW,
+    SILENT_AUTO,
+    PREVIEW_AUTO
+}
+
+sealed interface SilentLoginState {
+    data object Idle : SilentLoginState
+    data class Connecting(val code: String, val networkName: String = "") : SilentLoginState
+    data class Success(val code: String, val networkName: String = "") : SilentLoginState
+    data class Error(val code: String, val message: String) : SilentLoginState
+}
+
 sealed interface AutoFillStatus {
     data object Idle : AutoFillStatus
     data class Pending(val code: String) : AutoFillStatus
@@ -39,6 +54,9 @@ object CardDispatchCoordinator {
 
     private val _autoFillStatus = MutableStateFlow<AutoFillStatus>(AutoFillStatus.Idle)
     val autoFillStatus: StateFlow<AutoFillStatus> = _autoFillStatus.asStateFlow()
+
+    private val _silentLoginState = MutableStateFlow<SilentLoginState>(SilentLoginState.Idle)
+    val silentLoginState: StateFlow<SilentLoginState> = _silentLoginState.asStateFlow()
 
     private val _isBubbleRunning = MutableStateFlow(false)
     val isBubbleRunning: StateFlow<Boolean> = _isBubbleRunning.asStateFlow()
@@ -69,6 +87,43 @@ object CardDispatchCoordinator {
 
     fun setAccessibilityConnected(connected: Boolean) {
         _isAccessibilityConnected.value = connected
+    }
+
+    fun updateSilentLoginState(state: SilentLoginState) {
+        _silentLoginState.value = state
+    }
+
+    fun clearSilentLoginState() {
+        _silentLoginState.value = SilentLoginState.Idle
+    }
+
+    fun startSilentLogin(
+        context: Context,
+        code: String,
+        confidence: Float = 1.0f
+    ) {
+        val cleanCode = code.trim()
+        if (cleanCode.isBlank()) return
+        val network = _detectedNetworkName.value
+        _silentLoginState.value = SilentLoginState.Connecting(cleanCode, network)
+        saveScannedCardToHistory(
+            context = context,
+            code = cleanCode,
+            confidence = confidence,
+            submitted = false
+        )
+        val serviceIntent = Intent(context, SilentPortalLoginService::class.java).apply {
+            putExtra(SilentPortalLoginService.EXTRA_CARD_CODE, cleanCode)
+            putExtra(SilentPortalLoginService.EXTRA_NETWORK_NAME, network)
+        }
+        runCatching {
+            ContextCompat.startForegroundService(context, serviceIntent)
+        }.onFailure {
+            _silentLoginState.value = SilentLoginState.Error(
+                code = cleanCode,
+                message = "تعذر بدء الدخول الصامت — يمكنك فتح البوابة يدوياً"
+            )
+        }
     }
 
     fun updateDetectedNetwork(context: Context, networkName: String) {
@@ -194,7 +249,9 @@ object CardDispatchCoordinator {
     fun openInAppPortal(
         context: Context,
         autoStartScanner: Boolean = false,
-        prefillCode: String? = null
+        prefillCode: String? = null,
+        autoSubmitOnLock: Boolean = false,
+        forceAutoClick: Boolean = false
     ) {
         val intent = Intent(context, PortalBrowserActivity::class.java).apply {
             addFlags(
@@ -203,6 +260,8 @@ object CardDispatchCoordinator {
                     Intent.FLAG_ACTIVITY_SINGLE_TOP
             )
             putExtra(PortalBrowserActivity.EXTRA_AUTO_START_SCANNER, autoStartScanner)
+            putExtra(PortalBrowserActivity.EXTRA_AUTO_SUBMIT_ON_LOCK, autoSubmitOnLock)
+            putExtra(PortalBrowserActivity.EXTRA_FORCE_AUTO_CLICK, forceAutoClick)
             putExtra(PortalBrowserActivity.EXTRA_NETWORK_NAME, _detectedNetworkName.value)
             if (!prefillCode.isNullOrBlank()) {
                 putExtra(PortalBrowserActivity.EXTRA_PREFILL_CODE, prefillCode)

@@ -76,6 +76,7 @@ import com.example.ui.theme.DeepNavySurface
 import com.example.ui.theme.EmeraldPrimary
 import com.example.ui.theme.MidnightBg
 import com.example.utils.PermissionHelper
+import com.example.service.ScannerLaunchMode
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
@@ -83,6 +84,8 @@ import java.util.concurrent.Executors
 fun InAppScannerScreen(
     initialFlashEnabled: Boolean,
     vibrationEnabled: Boolean,
+    scanMode: ScannerLaunchMode = ScannerLaunchMode.REVIEW,
+    onSilentSubmitted: (() -> Unit)? = null,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -219,11 +222,43 @@ fun InAppScannerScreen(
         }
     }
 
-    LaunchedEffect(activeLockedCode) {
+    var autoActionDispatched by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(activeLockedCode, scanMode) {
         if (activeLockedCode != null && vibratedCode != activeLockedCode) {
             vibratedCode = activeLockedCode
             if (vibrationEnabled) {
                 PermissionHelper.triggerSuccessVibration(context)
+            }
+        }
+        if (activeLockedCode != null && !autoActionDispatched) {
+            when (scanMode) {
+                ScannerLaunchMode.SILENT_AUTO -> {
+                    autoActionDispatched = true
+                    CardDispatchCoordinator.startSilentLogin(
+                        context = context,
+                        code = activeLockedCode,
+                        confidence = lockedConfidenceState.floatValue
+                    )
+                    (onSilentSubmitted ?: onClose).invoke()
+                }
+                ScannerLaunchMode.PREVIEW_AUTO -> {
+                    autoActionDispatched = true
+                    CardDispatchCoordinator.saveScannedCardToHistory(
+                        context = context,
+                        code = activeLockedCode,
+                        confidence = lockedConfidenceState.floatValue,
+                        submitted = false
+                    )
+                    CardDispatchCoordinator.openInAppPortal(
+                        context = context,
+                        autoStartScanner = false,
+                        prefillCode = activeLockedCode,
+                        forceAutoClick = true
+                    )
+                    onClose()
+                }
+                ScannerLaunchMode.REVIEW -> Unit
             }
         }
     }
@@ -275,7 +310,11 @@ fun InAppScannerScreen(
                 color = DeepNavySurface.copy(alpha = 0.85f)
             ) {
                 Text(
-                    text = "ماسح الكرت الذكي",
+                    text = when (scanMode) {
+                        ScannerLaunchMode.SILENT_AUTO -> "مسح صامت ⚡"
+                        ScannerLaunchMode.PREVIEW_AUTO -> "مسح ومعاينة 👁️"
+                        ScannerLaunchMode.REVIEW -> "ماسح الكرت الذكي"
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     color = Color.White,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
@@ -457,7 +496,7 @@ fun InAppScannerScreen(
                     }
                 }
             }
-        } else if (lockedState != null) {
+        } else if (lockedState != null && scanMode == ScannerLaunchMode.REVIEW) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -473,6 +512,14 @@ fun InAppScannerScreen(
                     confidence = lockedState.confidence,
                     alternatives = lockedState.alternatives,
                     sourceLabel = lockedState.sourceLabel,
+                    onSilentLogin = { finalCode ->
+                        CardDispatchCoordinator.startSilentLogin(
+                            context = context,
+                            code = finalCode,
+                            confidence = lockedState.confidence
+                        )
+                        (onSilentSubmitted ?: onClose).invoke()
+                    },
                     onConnectDirect = { finalCode ->
                         CardDispatchCoordinator.saveScannedCardToHistory(
                             context = context,
@@ -483,7 +530,8 @@ fun InAppScannerScreen(
                         CardDispatchCoordinator.openInAppPortal(
                             context = context,
                             autoStartScanner = false,
-                            prefillCode = finalCode
+                            prefillCode = finalCode,
+                            forceAutoClick = true
                         )
                         onClose()
                     },
@@ -495,7 +543,6 @@ fun InAppScannerScreen(
                             submitted = false
                         )
                         CardDispatchCoordinator.copyToClipboard(context, finalCode, showToast = true)
-                        copiedFallbackCode = finalCode
                     },
                     onRescan = {
                         vibratedCode = null

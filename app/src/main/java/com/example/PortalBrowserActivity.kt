@@ -129,6 +129,8 @@ class PortalBrowserActivity : ComponentActivity() {
     private var autoStartScannerState by mutableStateOf(true)
     private var prefillCodeState by mutableStateOf<String?>(null)
     private var networkNameState by mutableStateOf("")
+    private var autoSubmitOnLockState by mutableStateOf(false)
+    private var forceAutoClickState by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -148,6 +150,8 @@ class PortalBrowserActivity : ComponentActivity() {
                 PortalBrowserScreen(
                     initialShowScanner = autoStartScannerState,
                     initialPrefillCode = prefillCodeState,
+                    initialAutoSubmitOnLock = autoSubmitOnLockState,
+                    initialForceAutoClick = forceAutoClickState,
                     networkName = networkNameState,
                     settings = settings,
                     onConsumeScannerTrigger = { autoStartScannerState = false },
@@ -183,6 +187,8 @@ class PortalBrowserActivity : ComponentActivity() {
 
     private fun applyLaunchIntent(intent: Intent?) {
         autoStartScannerState = intent?.getBooleanExtra(EXTRA_AUTO_START_SCANNER, false) == true
+        autoSubmitOnLockState = intent?.getBooleanExtra(EXTRA_AUTO_SUBMIT_ON_LOCK, false) == true
+        forceAutoClickState = intent?.getBooleanExtra(EXTRA_FORCE_AUTO_CLICK, false) == true
         prefillCodeState = intent?.getStringExtra(EXTRA_PREFILL_CODE)?.takeIf { it.isNotBlank() }
         val extraNet = intent?.getStringExtra(EXTRA_NETWORK_NAME).orEmpty()
         networkNameState = extraNet.ifBlank { CardDispatchCoordinator.detectedNetworkName.value }
@@ -192,6 +198,8 @@ class PortalBrowserActivity : ComponentActivity() {
         const val EXTRA_AUTO_START_SCANNER = "extra_auto_start_scanner"
         const val EXTRA_PREFILL_CODE = "extra_prefill_code"
         const val EXTRA_NETWORK_NAME = "extra_network_name"
+        const val EXTRA_AUTO_SUBMIT_ON_LOCK = "extra_auto_submit_on_lock"
+        const val EXTRA_FORCE_AUTO_CLICK = "extra_force_auto_click"
     }
 }
 
@@ -200,6 +208,8 @@ class PortalBrowserActivity : ComponentActivity() {
 private fun PortalBrowserScreen(
     initialShowScanner: Boolean,
     initialPrefillCode: String?,
+    initialAutoSubmitOnLock: Boolean,
+    initialForceAutoClick: Boolean,
     networkName: String,
     settings: KartiSettings,
     onConsumeScannerTrigger: () -> Unit,
@@ -219,6 +229,8 @@ private fun PortalBrowserScreen(
     var loadErrorMessage by remember { mutableStateOf<String?>(null) }
 
     var showScannerOverlay by remember { mutableStateOf(initialShowScanner) }
+    var autoSubmitOnLock by remember { mutableStateOf(initialAutoSubmitOnLock) }
+    var forceAutoClick by remember { mutableStateOf(initialForceAutoClick) }
     var pendingInjectionCode by remember { mutableStateOf(initialPrefillCode) }
     var injectionAttempts by remember { mutableIntStateOf(0) }
     var hasSubmittedCode by remember { mutableStateOf(false) }
@@ -241,7 +253,11 @@ private fun PortalBrowserScreen(
         }
     }
 
-    LaunchedEffect(initialShowScanner) {
+    LaunchedEffect(initialShowScanner, initialAutoSubmitOnLock, initialForceAutoClick) {
+        autoSubmitOnLock = initialAutoSubmitOnLock
+        if (initialForceAutoClick) {
+            forceAutoClick = true
+        }
         if (initialShowScanner) {
             showScannerOverlay = true
             onConsumeScannerTrigger()
@@ -272,12 +288,15 @@ private fun PortalBrowserScreen(
             val hasLoginInput = json.optBoolean("hasLoginInput", true)
             val hasBalanceKeywords = json.optBoolean("hasBalanceKeywords", false)
             val hasErrorKeywords = json.optBoolean("hasErrorKeywords", false)
+            val extractedError = json.optString("errorMessage", "").trim()
             val pageUrl = json.optString("url", currentUrl)
 
             if (hasErrorKeywords && hasLoginInput && hasSubmittedCode) {
                 portalErrorDetected = true
                 isOnBalancePage = false
-                statusBannerText = "لم يتم قبول الكود — تأكد من الرقم أو امسح كرتاً آخر"
+                statusBannerText = extractedError.ifBlank {
+                    "لم يتم قبول الكود — تأكد من الرقم أو امسح كرتاً آخر"
+                }
                 return@evaluateJavascript
             }
 
@@ -304,7 +323,7 @@ private fun PortalBrowserScreen(
         val wv = view ?: return
         if (injectionAttempts >= 3) return
 
-        if (!settings.autoFillEnabled) {
+        if (!forceAutoClick && !settings.autoFillEnabled) {
             pendingInjectionCode = null
             CardDispatchCoordinator.copyToClipboard(context, code, showToast = false)
             statusBannerText = "التعبئة التلقائية متوقفة — تم نسخ الكود ($code)"
@@ -314,7 +333,7 @@ private fun PortalBrowserScreen(
         injectionAttempts++
         val script = WifiPortalHelper.buildAutoFillAndSubmitScript(
             code = code,
-            autoClick = settings.autoClickEnabled
+            autoClick = forceAutoClick || settings.autoClickEnabled
         )
         wv.evaluateJavascript(script) { raw ->
             val cleaned = raw?.trim()?.let {
@@ -800,6 +819,7 @@ private fun PortalBrowserScreen(
                 hasCameraPermission = hasCameraPermission,
                 initialTorchEnabled = settings.autoFlashEnabled,
                 vibrationEnabled = settings.vibrationEnabled,
+                autoSubmitOnLock = autoSubmitOnLock,
                 networkName = networkName,
                 onRequestCameraPermission = {
                     cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -811,6 +831,8 @@ private fun PortalBrowserScreen(
                         confidence = confidence,
                         submitted = false
                     )
+                    forceAutoClick = true
+                    autoSubmitOnLock = false
                     pendingInjectionCode = code
                     injectionAttempts = 0
                     portalErrorDetected = false
@@ -818,7 +840,19 @@ private fun PortalBrowserScreen(
                     balancePromptDismissed = false
                     showScannerOverlay = false
                 },
-                onDismiss = { showScannerOverlay = false }
+                onSilentLogin = { code, confidence ->
+                    showScannerOverlay = false
+                    CardDispatchCoordinator.startSilentLogin(
+                        context = context,
+                        code = code,
+                        confidence = confidence
+                    )
+                    onClosePortal()
+                },
+                onDismiss = {
+                    autoSubmitOnLock = false
+                    showScannerOverlay = false
+                }
             )
         }
     }
@@ -829,9 +863,11 @@ private fun PortalOverlayScannerSheet(
     hasCameraPermission: Boolean,
     initialTorchEnabled: Boolean,
     vibrationEnabled: Boolean,
+    autoSubmitOnLock: Boolean,
     networkName: String,
     onRequestCameraPermission: () -> Unit,
     onCodeLocked: (String, Float) -> Unit,
+    onSilentLogin: (String, Float) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -950,12 +986,18 @@ private fun PortalOverlayScannerSheet(
         }
     }
 
-    LaunchedEffect(activeLockedCode) {
+    var autoSubmitted by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(activeLockedCode, autoSubmitOnLock) {
         if (activeLockedCode != null && vibratedCode != activeLockedCode) {
             vibratedCode = activeLockedCode
             if (vibrationEnabled) {
                 PermissionHelper.triggerSuccessVibration(context)
             }
+        }
+        if (activeLockedCode != null && autoSubmitOnLock && !autoSubmitted) {
+            autoSubmitted = true
+            onCodeLocked(activeLockedCode, lockedConfidenceState.floatValue)
         }
     }
 
@@ -969,7 +1011,7 @@ private fun PortalOverlayScannerSheet(
             .padding(horizontal = 16.dp, vertical = 16.dp),
         contentAlignment = Alignment.Center
     ) {
-        if (lockedState != null) {
+        if (lockedState != null && !autoSubmitOnLock) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -982,6 +1024,9 @@ private fun PortalOverlayScannerSheet(
                     confidence = lockedState.confidence,
                     alternatives = lockedState.alternatives,
                     sourceLabel = lockedState.sourceLabel,
+                    onSilentLogin = { finalCode ->
+                        onSilentLogin(finalCode, lockedState.confidence)
+                    },
                     onConnectDirect = { finalCode ->
                         onCodeLocked(finalCode, lockedState.confidence)
                     },

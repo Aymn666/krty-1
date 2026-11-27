@@ -170,35 +170,27 @@ class GalleryPickerActivity : ComponentActivity() {
                                 alternatives = current.alternatives,
                                 sourceLabel = "المعرض",
                                 rescanLabel = "صورة أخرى",
+                                onSilentLogin = { finalCode ->
+                                    CardDispatchCoordinator.startSilentLogin(
+                                        context = this@GalleryPickerActivity,
+                                        code = finalCode,
+                                        confidence = current.confidence
+                                    )
+                                    finish()
+                                },
                                 onConnectDirect = { finalCode ->
-                                    val accessibilityReady =
-                                        PermissionHelper.isAccessibilityServiceEnabled(this@GalleryPickerActivity) ||
-                                            CardDispatchCoordinator.isAccessibilityConnected.value
-
-                                    if (accessibilityReady) {
-                                        CardDispatchCoordinator.dispatchScannedCode(
-                                            context = this@GalleryPickerActivity,
-                                            code = finalCode,
-                                            confidence = current.confidence
-                                        )
-                                        Toast.makeText(
-                                            this@GalleryPickerActivity,
-                                            "جاري الاتصال بالكود: $finalCode",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    } else {
-                                        CardDispatchCoordinator.saveScannedCardToHistory(
-                                            context = this@GalleryPickerActivity,
-                                            code = finalCode,
-                                            confidence = current.confidence,
-                                            submitted = false
-                                        )
-                                        CardDispatchCoordinator.openInAppPortal(
-                                            context = this@GalleryPickerActivity,
-                                            autoStartScanner = false,
-                                            prefillCode = finalCode
-                                        )
-                                    }
+                                    CardDispatchCoordinator.saveScannedCardToHistory(
+                                        context = this@GalleryPickerActivity,
+                                        code = finalCode,
+                                        confidence = current.confidence,
+                                        submitted = false
+                                    )
+                                    CardDispatchCoordinator.openInAppPortal(
+                                        context = this@GalleryPickerActivity,
+                                        autoStartScanner = false,
+                                        prefillCode = finalCode,
+                                        forceAutoClick = true
+                                    )
                                     finish()
                                 },
                                 onCopyOnly = { finalCode ->
